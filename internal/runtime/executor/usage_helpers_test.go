@@ -94,7 +94,7 @@ func TestParseOpenAIResponseModel(t *testing.T) {
 
 func TestUsageReporterSpillsLargeStreamingOutputToTempFile(t *testing.T) {
 	setUsageBodyCaptureForTest(t, true)
-	reporter := newUsageReporter(context.Background(), "provider", "model", "", nil)
+	reporter := newUsageReporter(context.Background(), "provider", "model", "", nil, false)
 	chunk := bytes.Repeat([]byte("x"), usageReporterOutputMemoryLimit/2)
 
 	reporter.appendOutputChunk(chunk)
@@ -344,7 +344,7 @@ func TestFirstTokenLatencyMsFromContext(t *testing.T) {
 
 func TestUsageReporterPreservesDirectContentBeforeSpilledChunks(t *testing.T) {
 	setUsageBodyCaptureForTest(t, true)
-	reporter := newUsageReporter(context.Background(), "provider", "model", "", nil)
+	reporter := newUsageReporter(context.Background(), "provider", "model", "", nil, false)
 	chunk := bytes.Repeat([]byte("x"), usageReporterOutputMemoryLimit+1)
 	reporter.appendOutputChunk(chunk)
 	reporter.outputContent = "prefix\n"
@@ -368,7 +368,7 @@ func TestUsageReporterPreservesDirectContentBeforeSpilledChunks(t *testing.T) {
 
 func TestUsageReporterDefersLargeInputContent(t *testing.T) {
 	setUsageBodyCaptureForTest(t, true)
-	reporter := newUsageReporter(context.Background(), "provider", "model", "", nil)
+	reporter := newUsageReporter(context.Background(), "provider", "model", "", nil, false)
 	input := strings.Repeat("i", usageReporterOutputMemoryLimit+1)
 	reporter.setInputContent(input)
 
@@ -388,8 +388,10 @@ func TestUsageReporterDefersLargeInputContent(t *testing.T) {
 
 func TestUsageReporterPreservesStreamingClassificationWithoutBodyCapture(t *testing.T) {
 	setUsageBodyCaptureForTest(t, false)
-	reporter := newUsageReporter(context.Background(), "provider", "model", "", nil)
-	reporter.setInputContent(`{"model":"gpt-5.4","stream":true}`)
+	reporter := newUsageReporter(context.Background(), "provider", "model", "", nil, true)
+	// A body the flag can no longer be re-derived from: with storage disabled
+	// nothing is retained, and the classification must not depend on it either.
+	reporter.setInputContent(`{"model":"gpt-5.4"}`)
 
 	if !reporter.streamingRequest {
 		t.Fatal("streaming request classification should survive disabled body storage")

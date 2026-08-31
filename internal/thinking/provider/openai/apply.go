@@ -45,7 +45,12 @@ func (a *Applier) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *
 		return applyCompatibleOpenAI(body, config)
 	}
 	if modelInfo.Thinking == nil {
-		return body, nil
+		// A model that declares no thinking support still has to be protected
+		// from a value written upstream of here: the Claude→OpenAI translator
+		// turns `thinking.type: "disabled"` into `reasoning_effort: "none"`
+		// before this applier runs, and returning the body untouched forwards
+		// that value to an upstream that never agreed to accept it.
+		return dropNonStandardEffort(body), nil
 	}
 
 	// Only handle ModeLevel and ModeNone; other modes pass through unchanged.
@@ -110,15 +115,21 @@ func applyCompatibleOpenAI(body []byte, config thinking.ThinkingConfig) ([]byte,
 		}
 		effort = string(config.Level)
 	case thinking.ModeNone:
-		effort = string(thinking.LevelNone)
-		if config.Level != "" {
-			effort = string(config.Level)
-		}
+		// Omitting the field is how the OpenAI wire format says "do not think".
+		// Sending "none" instead is what made Command Code answer
+		// 400 `expected one of "low"|"medium"|"high"|"xhigh"|"max"` on every
+		// Claude Code request that disabled thinking. The model-aware path in
+		// Apply already refuses to emit "none" unless the model declares it;
+		// a model we know nothing about deserves at least the same caution.
+		effort = string(config.Level)
 	case thinking.ModeAuto:
-		// Auto mode for user-defined models: pass through as "auto"
-		effort = string(thinking.LevelAuto)
+		// "auto" is an internal marker for "let the model decide", not a wire
+		// value any OpenAI-compatible upstream accepts.
+		effort = ""
 	case thinking.ModeBudget:
-		// Budget mode: convert budget to level using threshold mapping
+		// Budget mode: convert budget to level using threshold mapping.
+		// A zero budget maps to "none" and a negative one to "auto", so the
+		// result goes through the same guard as the explicit modes.
 		level, ok := thinking.ConvertBudgetToLevel(config.Budget)
 		if !ok {
 			return body, nil
@@ -128,8 +139,41 @@ func applyCompatibleOpenAI(body []byte, config thinking.ThinkingConfig) ([]byte,
 		return body, nil
 	}
 
+	if effort == "" || isNonStandardEffort(effort) {
+		return dropNonStandardEffort(body), nil
+	}
+
 	result, _ := sjson.SetBytes(body, "reasoning_effort", effort)
 	return result, nil
+}
+
+// isNonStandardEffort reports whether a reasoning_effort value is one this
+// codebase uses internally rather than one the OpenAI wire format defines.
+//
+// "none" and "auto" are both internal markers. Upstreams differ on them —
+// opencode go tolerates "none" while Command Code rejects it — so neither may
+// be sent to a model whose accepted levels are unknown.
+func isNonStandardEffort(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(thinking.LevelNone), string(thinking.LevelAuto):
+		return true
+	default:
+		return false
+	}
+}
+
+// dropNonStandardEffort removes a reasoning_effort the upstream would reject,
+// leaving any legitimate value in place.
+func dropNonStandardEffort(body []byte) []byte {
+	effort := gjson.GetBytes(body, "reasoning_effort")
+	if !effort.Exists() || !isNonStandardEffort(effort.String()) {
+		return body
+	}
+	result, err := sjson.DeleteBytes(body, "reasoning_effort")
+	if err != nil {
+		return body
+	}
+	return result
 }
 
 func hasLevel(levels []string, target string) bool {

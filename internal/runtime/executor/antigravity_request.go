@@ -54,6 +54,16 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
 
 	useAntigravitySchema := strings.Contains(modelName, "claude") || strings.Contains(modelName, "gemini-3-pro-high")
 	payloadStr := string(payload)
+
+	// The upstream accepts only "user" and "model" here and rejects anything
+	// else with a bare 400 INVALID_ARGUMENT naming no field. Claude Code sends
+	// "system" turns inside `messages` in addition to the top-level `system`
+	// field, and the Claude translator forwards any role it does not recognise
+	// unchanged, so those reached the upstream verbatim and failed the request.
+	//
+	// Normalising here rather than in the translator covers every entrypoint
+	// format at once: this is the last point all of them pass through.
+	payloadStr = util.NormalizeGeminiContentRoles(payloadStr, "request.contents")
 	paths := make([]string, 0)
 	util.Walk(gjson.Parse(payloadStr), "", "parametersJsonSchema", &paths)
 	for _, p := range paths {
@@ -229,9 +239,13 @@ func antigravityBaseURLFallbackOrder(auth *cliproxyauth.Auth) []string {
 	if base := resolveCustomAntigravityBaseURL(auth); base != "" {
 		return []string{base}
 	}
+	// Sandbox first: the non-sandbox daily host throttles far more readily, and
+	// every 429 it returns costs a retry and risks being read as an exhausted
+	// quota. Production logs showed the daily host rate-limiting requests that
+	// the sandbox host then served without complaint.
 	return []string{
-		antigravityBaseURLDaily,
 		antigravitySandboxBaseURLDaily,
+		antigravityBaseURLDaily,
 		// antigravityBaseURLProd,
 	}
 }

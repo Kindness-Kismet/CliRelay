@@ -99,6 +99,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.AutoUpdate.DockerImage = DefaultAutoUpdateDockerImage
 	cfg.AutoUpdate.UpdaterURL = DefaultAutoUpdateUpdaterURL
 	cfg.ProxyWarmup = defaultProxyWarmConfig()
+	cfg.AccountStatusRefresh = defaultAccountStatusRefreshConfig()
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		if optional {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
@@ -143,8 +144,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.SanitizeOpenCodeGoKeys()
 	cfg.SanitizeClineKeys()
 	cfg.SanitizeOllamaCloudKeys()
+	cfg.SanitizeCommandCodeKeys()
 	cfg.SanitizeGeminiKeys()
 	cfg.SanitizeProxyWarmup()
+	cfg.SanitizeAccountStatusRefresh()
 
 	// Normalize secret-key: if provided and not bcrypt-hashed, hash it on load for runtime use.
 	if cfg.RemoteManagement.SecretKey != "" && !looksLikeBcrypt(cfg.RemoteManagement.SecretKey) {

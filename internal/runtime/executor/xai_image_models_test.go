@@ -100,13 +100,20 @@ func TestUpstreamWinsWhenItAdvertisesAnImageModel(t *testing.T) {
 }
 
 func TestImageModelInfosCoverEveryRegisteredImageModel(t *testing.T) {
-	// Two models: grok-imagine-image and grok-imagine-image-quality. Earlier
-	// revisions also carried grok-imagine-image-pro and grok-2-image-1212, which
-	// the live xAI catalog does not serve.
-	if len(xaiImageModelInfos()) != 2 {
-		t.Errorf("image model count = %d, want the two registered Grok image models", len(xaiImageModelInfos()))
+	// Every registered Grok media model must be here, image and video alike:
+	// none of them is discoverable through the upstream /models listing, so a
+	// model missing from this merge is unroutable no matter what the catalog says.
+	models := xaiMediaModelInfos()
+	seen := make(map[string]bool, len(models))
+	for _, model := range models {
+		seen[model.ID] = true
 	}
-	for _, model := range xaiImageModelInfos() {
+	for _, id := range []string{"grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-video-1.5"} {
+		if !seen[id] {
+			t.Errorf("%s missing from the merged media models; it would fail with auth_not_found", id)
+		}
+	}
+	for _, model := range xaiMediaModelInfos() {
 		if model.Type != "xai" {
 			t.Errorf("%s type = %q, want xai so provider routing resolves", model.ID, model.Type)
 		}

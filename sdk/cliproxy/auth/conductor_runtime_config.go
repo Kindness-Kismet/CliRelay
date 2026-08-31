@@ -122,6 +122,10 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked() {
 			if entry := resolveOllamaCloudAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 			}
+		case "commandcode":
+			if entry := resolveCommandCodeAPIKeyConfig(cfg, auth); entry != nil {
+				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
+			}
 		case "bedrock":
 			if entry := resolveBedrockAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)

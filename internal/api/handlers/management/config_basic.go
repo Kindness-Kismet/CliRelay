@@ -50,6 +50,7 @@ func (h *Handler) GetConfig(c *gin.Context) {
 		OpenCodeGoKey:        runtimeCfg.OpenCodeGoKey,
 		ClineKey:             runtimeCfg.ClineKey,
 		OllamaCloudKey:       runtimeCfg.OllamaCloudKey,
+		CommandCodeKey:       runtimeCfg.CommandCodeKey,
 		OpenAICompatibility:  runtimeCfg.OpenAICompatibility,
 		VertexCompatAPIKey:   runtimeCfg.VertexCompatAPIKey,
 		ClaudeHeaderDefaults: runtimeCfg.ClaudeHeaderDefaults,
@@ -221,6 +222,15 @@ func sanitizeConfigForAPI(cfg *config.Config) *config.Config {
 		copy.OllamaCloudKey[i].ProxyURL = maskBaseURL(copy.OllamaCloudKey[i].ProxyURL)
 		copy.OllamaCloudKey[i].AuthCookie = maskKey(copy.OllamaCloudKey[i].AuthCookie)
 		copy.OllamaCloudKey[i].ExcludedModels = nil
+	}
+
+	// Mask Command Code API keys, names, URLs, and exclusions
+	for i := range copy.CommandCodeKey {
+		copy.CommandCodeKey[i].APIKey = maskKey(copy.CommandCodeKey[i].APIKey)
+		copy.CommandCodeKey[i].Name = maskName(copy.CommandCodeKey[i].Name)
+		copy.CommandCodeKey[i].BaseURL = maskBaseURL(copy.CommandCodeKey[i].BaseURL)
+		copy.CommandCodeKey[i].ProxyURL = maskBaseURL(copy.CommandCodeKey[i].ProxyURL)
+		copy.CommandCodeKey[i].ExcludedModels = nil
 	}
 
 	// Mask OpenAI compatibility API keys, names, URLs, and models

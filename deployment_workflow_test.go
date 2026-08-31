@@ -120,13 +120,25 @@ func TestBlueGreenDeployScriptSyntaxAndGuards(t *testing.T) {
 		`scripts/cleanup-drained-slot.sh`,
 		`grep -v '\.bak\.'`,
 		`SCRIPT_VERSION`,
-		`TimeoutStopSec=90`,
+		`TimeoutStopSec=${SHUTDOWN_GRACE_SECONDS}`,
+		`CLIRELAY_SHUTDOWN_GRACE`,
+		// The cutover must prove it happened rather than infer it from an exit
+		// status. A missing rewrite tool once left the config untouched while
+		// the deploy reported success, which is what manufactured the slot
+		// drift behind two outages.
+		`rewrite_slot_port`,
+		`nginx_slot_port`,
+		`required command not found on deploy host`,
+		`refusing to stop`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("deploy script missing guard %q", want)
 		}
 	}
 	for _, forbidden := range []string{
+		// perl is not installed on the deploy host. Using it for the config
+		// rewrite failed silently and the deploy still reported success.
+		`perl -0pi`,
 		`migrate-sqlite-to-postgres.sh`,
 		`Legacy SQLite`,
 		`stop_active_units_for_migration`,

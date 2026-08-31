@@ -7,7 +7,7 @@ import (
 	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
 )
 
-// withXAIImageModels merges the Grok Imagine models into a discovered model list.
+// withXAIMediaModels merges the Grok Imagine models into a discovered model list.
 //
 // An xAI credential's routable models come entirely from the upstream /models
 // endpoint. For an OAuth subscription that endpoint is the CLI chat proxy, which
@@ -22,8 +22,8 @@ import (
 // Merging is safe because the media host is reachable with the same token the chat
 // surface uses; a credential that cannot reach it fails at request time with a real
 // upstream error rather than looking like a missing model.
-func withXAIImageModels(models []*sdkmodelcatalog.ModelInfo) []*sdkmodelcatalog.ModelInfo {
-	imageModels := xaiImageModelInfos()
+func withXAIMediaModels(models []*sdkmodelcatalog.ModelInfo) []*sdkmodelcatalog.ModelInfo {
+	imageModels := xaiMediaModelInfos()
 	if len(imageModels) == 0 {
 		return models
 	}
@@ -49,14 +49,22 @@ func withXAIImageModels(models []*sdkmodelcatalog.ModelInfo) []*sdkmodelcatalog.
 	return merged
 }
 
-// xaiImageModelInfos converts the static Grok image definitions into catalog
+// xaiMediaModelInfos converts the static Grok media definitions into catalog
 // entries. Sourcing them from the registry keeps one definition of the model set,
 // so adding a model there makes it routable without a second edit here.
-func xaiImageModelInfos() []*sdkmodelcatalog.ModelInfo {
+//
+// Both image and video belong here: neither is discoverable upstream, and a video
+// model that is only in the static catalog reproduces exactly the failure this
+// file exists to prevent — visible in the panel, "auth_not_found: no auth
+// available" on use.
+func xaiMediaModelInfos() []*sdkmodelcatalog.ModelInfo {
 	definitions := registry.GetXAIModels()
 	models := make([]*sdkmodelcatalog.ModelInfo, 0, len(definitions))
 	for _, definition := range definitions {
-		if definition == nil || !registry.IsImageGenerationModel(definition.ID) {
+		if definition == nil {
+			continue
+		}
+		if !registry.IsImageGenerationModel(definition.ID) && !registry.IsVideoGenerationModel(definition.ID) {
 			continue
 		}
 		models = append(models, &sdkmodelcatalog.ModelInfo{

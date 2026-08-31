@@ -9,11 +9,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	antigravityauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/antigravity"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
@@ -29,10 +29,13 @@ const (
 	antigravityStreamPath          = "/v1internal:streamGenerateContent"
 	antigravityGeneratePath        = "/v1internal:generateContent"
 	antigravityModelsPath          = "/v1internal:fetchAvailableModels"
-	defaultAntigravityAgent        = "antigravity/1.104.0 darwin/arm64"
-	antigravityAuthType            = "antigravity"
-	refreshSkew                    = 3000 * time.Second
-	systemInstruction              = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
+	// Shared with the account status probe. The two had drifted to different
+	// versions, so CloudCode saw one account as two different clients and
+	// served the older one a reduced model set.
+	defaultAntigravityAgent = antigravityauth.ClientUserAgent
+	antigravityAuthType     = "antigravity"
+	refreshSkew             = 3000 * time.Second
+	systemInstruction       = "You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.**Absolute paths only****Proactiveness**"
 )
 
 // AntigravityExecutor proxies requests to the antigravity upstream.
@@ -88,143 +91,23 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	baseModel := strings.TrimSpace(req.Model)
-	isClaude := strings.Contains(strings.ToLower(baseModel), "claude")
-
-	if isClaude || strings.Contains(baseModel, "gemini-3-pro") {
-		return e.executeClaudeNonStream(ctx, auth, req, opts)
-	}
-
-	token, updatedAuth, errToken := e.ensureAccessToken(ctx, auth)
-	if errToken != nil {
-		return resp, errToken
-	}
-	if updatedAuth != nil {
-		auth = updatedAuth
-	}
-
-	execCtx := e.newAntigravityExecutionContext(ctx, auth, req, opts, false)
-	reporter := execCtx.Reporter()
-	defer reporter.trackFailure(execCtx.Context, &err)
-	translated, err := e.buildAntigravityPayload(execCtx)
-	if err != nil {
-		return resp, err
-	}
-
-	baseURLs := antigravityBaseURLFallbackOrder(auth)
-	httpClient := execCtx.HTTPClient(0)
-	recorder := execCtx.Recorder()
-
-	attempts := antigravityRetryAttempts(auth, e.cfg)
-
-attemptLoop:
-	for attempt := 0; attempt < attempts; attempt++ {
-		var lastStatus int
-		var lastBody []byte
-		var lastErr error
-
-		for idx, baseURL := range baseURLs {
-			httpReq, requestBody, errReq := e.buildRequest(execCtx.Context, auth, token, execCtx.BaseModel, translated, false, opts.Alt, baseURL)
-			if errReq != nil {
-				err = errReq
-				return resp, err
-			}
-			recorder.RecordRequest(httpReq.URL.String(), httpReq.Method, httpReq.Header.Clone(), requestBody)
-
-			httpResp, errDo := httpClient.Do(httpReq)
-			if errDo != nil {
-				recorder.RecordResponseError(errDo)
-				if errors.Is(errDo, context.Canceled) || errors.Is(errDo, context.DeadlineExceeded) {
-					return resp, errDo
-				}
-				lastStatus = 0
-				lastBody = nil
-				lastErr = errDo
-				if idx+1 < len(baseURLs) {
-					log.Debugf("antigravity executor: request error on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-					continue
-				}
-				err = errDo
-				return resp, err
-			}
-
-			recorder.RecordResponseMetadata(httpResp.StatusCode, httpResp.Header.Clone())
-			readBody := readUpstreamResponseBody
-			if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-				readBody = func(provider string, r io.Reader) ([]byte, error) {
-					return readUpstreamErrorBody(provider, r), nil
-				}
-			}
-			bodyBytes, errRead := readBody("antigravity", httpResp.Body)
-			if errClose := httpResp.Body.Close(); errClose != nil {
-				log.Errorf("antigravity executor: close response body error: %v", errClose)
-			}
-			if errRead != nil {
-				recorder.RecordResponseError(errRead)
-				err = errRead
-				return resp, err
-			}
-			recorder.AppendResponseChunk(bodyBytes)
-
-			if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
-				log.Debugf("antigravity executor: upstream error status: %d, body: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), bodyBytes))
-				lastStatus = httpResp.StatusCode
-				lastBody = append([]byte(nil), bodyBytes...)
-				lastErr = nil
-				if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
-					log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-					continue
-				}
-				if antigravityShouldRetryNoCapacity(httpResp.StatusCode, bodyBytes) {
-					if idx+1 < len(baseURLs) {
-						log.Debugf("antigravity executor: no capacity on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-						continue
-					}
-					if attempt+1 < attempts {
-						delay := antigravityNoCapacityRetryDelay(attempt)
-						log.Debugf("antigravity executor: no capacity for model %s, retrying in %s (attempt %d/%d)", execCtx.BaseModel, delay, attempt+1, attempts)
-						if errWait := antigravityWait(ctx, delay); errWait != nil {
-							return resp, errWait
-						}
-						continue attemptLoop
-					}
-				}
-				sErr := statusErr{code: httpResp.StatusCode, msg: string(bodyBytes)}
-				if httpResp.StatusCode == http.StatusTooManyRequests {
-					if retryAfter, parseErr := parseRetryDelay(bodyBytes); parseErr == nil && retryAfter != nil {
-						sErr.retryAfter = retryAfter
-					}
-				}
-				err = sErr
-				return resp, err
-			}
-
-			reporter.publishWithContent(execCtx.Context, parseAntigravityUsage(bodyBytes), string(req.Payload), string(bodyBytes))
-			var param any
-			converted := sdktranslator.TranslateNonStream(execCtx.Context, execCtx.Execution.TargetFormat, execCtx.SourceFormat, req.Model, execCtx.OriginalPayload, translated, bodyBytes, &param)
-			resp = cliproxyexecutor.Response{Payload: []byte(converted), Headers: httpResp.Header.Clone()}
-			reporter.ensurePublished(execCtx.Context)
-			return resp, nil
-		}
-
-		switch {
-		case lastStatus != 0:
-			sErr := statusErr{code: lastStatus, msg: string(lastBody)}
-			if lastStatus == http.StatusTooManyRequests {
-				if retryAfter, parseErr := parseRetryDelay(lastBody); parseErr == nil && retryAfter != nil {
-					sErr.retryAfter = retryAfter
-				}
-			}
-			err = sErr
-		case lastErr != nil:
-			err = lastErr
-		default:
-			err = statusErr{code: http.StatusServiceUnavailable, msg: "antigravity executor: no base url available"}
-		}
-		return resp, err
-	}
-
-	return resp, err
+	// Every non-streaming request is served by asking the streaming endpoint and
+	// assembling the result.
+	//
+	// The upstream's :generateContent does not work for the whole model range.
+	// Production data over a week: 41 non-streaming calls to gemini-3.7-flash-*
+	// failed without exception while 38 streaming calls to the same model on the
+	// same account all succeeded; gemini-2.5-flash, meanwhile, worked either way.
+	// So the endpoint's coverage varies per model and cannot be predicted from
+	// the name.
+	//
+	// This detour already existed but was gated on `claude` or `gemini-3-pro`
+	// appearing in the model id — a list that silently excluded every model
+	// added since, including the gemini-3.x line. Rather than extending the list
+	// on each incident, every model now takes the path that is known to work for
+	// all of them: :streamGenerateContent is what ordinary streaming requests
+	// use, so it is exercised continuously by real traffic.
+	return e.executeViaStreamEndpoint(ctx, auth, req, opts)
 }
 
 // ExecuteStream performs a streaming request to the Antigravity API.
@@ -320,10 +203,13 @@ attemptLoop:
 				lastStatus = httpResp.StatusCode
 				lastBody = append([]byte(nil), bodyBytes...)
 				lastErr = nil
-				if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
-					log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-					continue
-				}
+				// 429 is an account-level RESOURCE_EXHAUSTED signal, not a
+				// host-specific hiccup: production traces show the same auth
+				// getting 429 on both sandbox and daily back to back, so
+				// falling back to the other host here only burns a second
+				// attempt on an account that's already known to be limited,
+				// leaving the outer selector fewer retries to reach a
+				// different, healthy account.
 				if antigravityShouldRetryNoCapacity(httpResp.StatusCode, bodyBytes) {
 					if idx+1 < len(baseURLs) {
 						log.Debugf("antigravity executor: no capacity on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])

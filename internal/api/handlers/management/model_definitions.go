@@ -17,6 +17,10 @@ var (
 	clineRecommendedModelsClient = &http.Client{Timeout: 5 * time.Second}
 	ollamaCloudModelsURL         = "https://ollama.com/v1/models"
 	ollamaCloudModelsClient      = &http.Client{Timeout: 5 * time.Second}
+	// Command Code serves its catalog without a credential, so the live list is
+	// always available and the static snapshot only has to cover the offline case.
+	commandCodeModelsURL    = "https://api.commandcode.ai/provider/v1/models"
+	commandCodeModelsClient = &http.Client{Timeout: 5 * time.Second}
 )
 
 // GetStaticModelDefinitions returns static model metadata for a given channel.
@@ -44,6 +48,11 @@ func (h *Handler) GetStaticModelDefinitions(c *gin.Context) {
 	}
 	if normalizedChannel == "ollama-cloud" {
 		if remoteModels, err := fetchOllamaCloudModelDefinitions(c.Request.Context()); err == nil && len(remoteModels) > 0 {
+			models = remoteModels
+		}
+	}
+	if normalizedChannel == "commandcode" {
+		if remoteModels, err := fetchCommandCodeModelDefinitions(c.Request.Context()); err == nil && len(remoteModels) > 0 {
 			models = remoteModels
 		}
 	}
@@ -103,6 +112,57 @@ func fetchOllamaCloudModelDefinitions(ctx context.Context) ([]*registry.ModelInf
 			OwnedBy:     ownedBy,
 			Type:        "ollama-cloud",
 			DisplayName: id,
+		})
+	}
+	return models, nil
+}
+
+func fetchCommandCodeModelDefinitions(ctx context.Context) ([]*registry.ModelInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, commandCodeModelsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := commandCodeModelsClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("command code models status %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Data []struct {
+			ID            string `json:"id"`
+			Name          string `json:"name"`
+			Created       int64  `json:"created"`
+			ContextLength int    `json:"context_length"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+
+	models := make([]*registry.ModelInfo, 0, len(payload.Data))
+	for _, item := range payload.Data {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		displayName := strings.TrimSpace(item.Name)
+		if displayName == "" {
+			displayName = id
+		}
+		models = append(models, &registry.ModelInfo{
+			ID:            id,
+			Object:        "model",
+			Created:       item.Created,
+			OwnedBy:       "command-code",
+			Type:          "commandcode",
+			DisplayName:   displayName,
+			ContextLength: item.ContextLength,
 		})
 	}
 	return models, nil

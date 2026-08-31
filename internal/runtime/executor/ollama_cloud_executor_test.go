@@ -5,13 +5,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	cliproxyusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
 )
@@ -286,8 +289,8 @@ func TestOllamaCloudNativeCacheKeyScopesExplicitPromptKey(t *testing.T) {
 	authA := &cliproxyauth.Auth{ID: "ollama-cloud:one"}
 	authB := &cliproxyauth.Auth{ID: "ollama-cloud:two"}
 
-	keyA := ollamaNativeCacheKey(authA, "glm-5.2", source, nil, cliproxyexecutor.Options{})
-	keyB := ollamaNativeCacheKey(authB, "glm-5.2", source, nil, cliproxyexecutor.Options{})
+	keyA := ollamaPromptCacheKey(authA, "glm-5.2", source, cliproxyexecutor.Options{}, "hi")
+	keyB := ollamaPromptCacheKey(authB, "glm-5.2", source, cliproxyexecutor.Options{}, "hi")
 
 	if keyA == "" || keyB == "" {
 		t.Fatalf("cache keys must be present: %q / %q", keyA, keyB)
@@ -335,7 +338,7 @@ func TestOllamaCloudExecutorRoutesResponsesToNativeChat(t *testing.T) {
 }
 
 func TestOllamaCloudNativeChatConvertsToolCallArguments(t *testing.T) {
-	body, _ := ollamaNativeChatRequest([]byte(`{
+	body := ollamaNativeChatRequest([]byte(`{
 		"model":"deepseek-v4-flash",
 		"messages":[
 			{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"exec_command","arguments":"{\"cmd\":\"cat /Users/kittors/.codex/RTK.md\"}"}}]},
@@ -445,6 +448,56 @@ func TestOllamaCloudExecutorClaudeMessagesAddsCacheControl(t *testing.T) {
 	}
 	if got := gjson.GetBytes(gotBody, "messages.0.content.0.cache_control.type").String(); got != "ephemeral" {
 		t.Fatalf("cache_control = %q, want ephemeral; body=%s", got, gotBody)
+	}
+}
+
+// Ollama's Anthropic-compatible endpoint never returns cache_read_input_tokens,
+// so Claude-format clients (Claude Code and friends) used to log a flat 0 cached
+// tokens for every turn of a conversation. The estimate must cover this path too,
+// not just native /api/chat.
+func TestOllamaCloudExecutorClaudeMessagesReportsEstimatedCacheHit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"glm-5.2","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1000,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	usagePlugin := &usageCapturePlugin{records: make(chan cliproxyusage.Record, 8)}
+	cliproxyusage.RegisterPlugin(usagePlugin)
+
+	exec := NewOllamaCloudExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{ID: "ollama-cloud:apikey:claude", Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL}}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude}
+	history := strings.Repeat("shared conversation history ", 400)
+
+	for _, turn := range []string{history, history + " plus one more turn"} {
+		payload := []byte(`{"model":"glm-5.2","max_tokens":1024,"messages":[{"role":"user","content":` + strconv.Quote(turn) + `}]}`)
+		if _, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{Model: "glm-5.2", Payload: payload}, opts); err != nil {
+			t.Fatalf("Execute returned error: %v", err)
+		}
+	}
+
+	timer := time.After(2 * time.Second)
+	var lastCached int64
+	for {
+		select {
+		case record := <-usagePlugin.records:
+			if record.Provider != "ollama-cloud" {
+				continue
+			}
+			lastCached = record.Detail.CachedTokens
+			if lastCached > 0 {
+				if record.Detail.CacheReadTokens != lastCached {
+					t.Fatalf("cache read = %d, want %d", record.Detail.CacheReadTokens, lastCached)
+				}
+				if lastCached > record.Detail.InputTokens {
+					t.Fatalf("cached tokens %d exceed input tokens %d", lastCached, record.Detail.InputTokens)
+				}
+				return
+			}
+		case <-timer:
+			t.Fatalf("timed out waiting for a cache estimate on the Claude path (last cached=%d)", lastCached)
+		}
 	}
 }
 

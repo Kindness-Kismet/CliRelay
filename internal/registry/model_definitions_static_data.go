@@ -911,7 +911,7 @@ func GetOpenAIModels() []*ModelInfo {
 }
 
 func GetXAIModels() []*ModelInfo {
-	return append(getXAIImageModelDefinitions(), []*ModelInfo{
+	return append(append(getXAIImageModelDefinitions(), getXAIVideoModelDefinitions()...), []*ModelInfo{
 		{
 			ID:                  "grok-build-0.1",
 			Object:              "model",

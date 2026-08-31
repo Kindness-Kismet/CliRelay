@@ -40,6 +40,14 @@ func reconcileAIAccountBinding(auth *coreauth.Auth) {
 	if identity == nil {
 		return
 	}
+	// Runs before the binding upsert so the account's history is already under the
+	// shared id by the time anything points at it.
+	if err := MergeLegacySplitAuthSubject(auth, identity); err != nil {
+		log.WithError(err).WithFields(log.Fields{
+			"tenant_id": normalizeTenantID(auth.TenantID), "provider": identity.Provider,
+			"auth_subject_id": identity.ID,
+		}).Warn("usage: merge legacy split ai account subject")
+	}
 	if err := UpsertAIAccountTenantBinding(auth, identity); err != nil {
 		log.WithError(err).WithFields(log.Fields{
 			"tenant_id": normalizeTenantID(auth.TenantID), "provider": identity.Provider,

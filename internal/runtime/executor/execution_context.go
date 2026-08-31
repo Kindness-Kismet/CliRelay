@@ -179,6 +179,22 @@ func newExecutionContext(
 	}
 }
 
+// ClientRequestedStream reports whether the caller asked for a streamed
+// response, which is what usage records classify by.
+//
+// The upstream call shape is not a usable proxy for it: Antigravity serves
+// every non-streaming request from :streamGenerateContent, so the executor is
+// reading SSE either way. Both payload views are consulted because
+// OriginalPayload only differs from Request.Payload when the handler supplied a
+// pre-translation body, and whichever view is the client's own is the one still
+// carrying the top-level "stream" flag.
+func (ec *ExecutionContext) ClientRequestedStream() bool {
+	if ec == nil {
+		return false
+	}
+	return isStreamingUsageRequestBytes(ec.OriginalPayload) || isStreamingUsageRequestBytes(ec.Request.Payload)
+}
+
 func (ec *ExecutionContext) Reporter() *usageReporter {
 	if ec == nil {
 		return nil
@@ -188,7 +204,7 @@ func (ec *ExecutionContext) Reporter() *usageReporter {
 	if strings.TrimSpace(model) == "" {
 		model = ec.BaseModel
 	}
-	reporter := newUsageReporter(ec.Context, ec.Provider, model, ec.BaseModel, ec.Auth)
+	reporter := newUsageReporter(ec.Context, ec.Provider, model, ec.BaseModel, ec.Auth, ec.ClientRequestedStream())
 	level := thinking.ExtractThinkingLevel(ec.OriginalPayload, ec.SourceFormat.String())
 	if parsedModel.HasSuffix {
 		level = parsedModel.RawSuffix

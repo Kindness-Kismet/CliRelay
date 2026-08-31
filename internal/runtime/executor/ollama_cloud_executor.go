@@ -79,7 +79,7 @@ func (e *OllamaCloudExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
-	ctx = preparedCtx
+	ctx = withOllamaPromptCacheEstimator(preparedCtx, auth, prepared.Request, opts)
 	req = prepared.Request
 
 	var resp cliproxyexecutor.Response
@@ -102,7 +102,7 @@ func (e *OllamaCloudExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 	if err != nil {
 		return nil, err
 	}
-	ctx = preparedCtx
+	ctx = withOllamaPromptCacheEstimator(preparedCtx, auth, prepared.Request, opts)
 	req = prepared.Request
 
 	var result *cliproxyexecutor.StreamResult

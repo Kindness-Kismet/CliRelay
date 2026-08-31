@@ -126,6 +126,8 @@ func providerRuntimeSetting(path string, cfg *config.Config) (string, any) {
 		return settingsstore.RuntimeSettingClineKeys, cfg.ClineKey
 	case strings.HasPrefix(relative, "/ollama-cloud-api-key"):
 		return settingsstore.RuntimeSettingOllamaCloudKeys, cfg.OllamaCloudKey
+	case strings.HasPrefix(relative, "/commandcode-api-key"):
+		return settingsstore.RuntimeSettingCommandCodeKeys, cfg.CommandCodeKey
 	case strings.HasPrefix(relative, "/codex-api-key"):
 		return settingsstore.RuntimeSettingCodexKeys, cfg.CodexKey
 	case strings.HasPrefix(relative, "/openai-compatibility"):

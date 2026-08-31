@@ -161,6 +161,7 @@ func InitTables(db *sql.DB) {
 	seedDefaultModelConfigRows(db)
 	mergeLegacyPricingIntoModelConfigs(db)
 	repairDefaultPerCallModelConfigRows(db)
+	repairMediaGenerationModelConfigRows(db)
 }
 
 func NormalizeModelOwnerValue(value string) string {
@@ -647,20 +648,7 @@ func NormalizeModelReasoningJSON(value string) string {
 }
 
 func defaultModelConfigRows() []ModelConfigRow {
-	channels := []string{
-		"claude",
-		"gemini",
-		"vertex",
-		"gemini-cli",
-		"aistudio",
-		"codex",
-		"qwen",
-		"iflow",
-		"kimi",
-		"cline",
-		"opencode-go",
-		"antigravity",
-	}
+	channels := seedModelChannels()
 
 	seen := make(map[string]struct{})
 	rows := make([]ModelConfigRow, 0, 256)
@@ -699,7 +687,7 @@ func defaultModelConfigRows() []ModelConfigRow {
 				PricingMode:         "token",
 				Source:              "seed",
 			}
-			applyImageGenerationSeedDefaults(&row, modelID)
+			applyMediaGenerationSeedDefaults(&row, modelID)
 			rows = append(rows, row)
 		}
 	}

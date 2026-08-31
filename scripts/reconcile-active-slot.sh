@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# Reconciles the recorded active slot against systemd only.
+#
+# nginx is deliberately out of scope here: locating its config needs DOMAIN and
+# container settings this script does not take, and a second implementation
+# would be free to disagree with the one that matters. deploy-blue-green.sh
+# reconciles against nginx immediately after calling this, and nginx wins there
+# because it is the source that decides where traffic actually goes.
+#
+# So a green result from this script means "the record matches systemd", not
+# "the deployment is consistent". Do not use it alone to conclude the latter.
 set -euo pipefail
 
 SERVICE_NAME="${SERVICE_NAME:-clirelay2}"

@@ -128,8 +128,11 @@ func TestOpenAICompatExecutorClineUsesOpenCodeGoForCrossProviderVisionFallback(t
 				if record.ChannelName != "opencode go" {
 					t.Fatalf("channel name = %q, want opencode go", record.ChannelName)
 				}
-				if record.UpstreamModel != "qwen3.5-plus" {
-					t.Fatalf("upstream model = %q, want qwen3.5-plus", record.UpstreamModel)
+				// The fallback executor runs with the fallback model as the requested
+				// model, so there is no second model to disclose: recording one would
+				// light up the console's "real model ID" hint for nothing.
+				if record.UpstreamModel != "" {
+					t.Fatalf("upstream model = %q, want empty for a self-identical upstream", record.UpstreamModel)
 				}
 				return
 			}

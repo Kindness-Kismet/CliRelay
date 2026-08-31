@@ -131,6 +131,16 @@ func (e *XAIExecutor) executeImageGeneration(ctx context.Context, auth *cliproxy
 	}
 	recorder.AppendResponseChunk(data)
 
+	// Grok Imagine returns no token counts, so there is nothing for the usage
+	// parsers to read and a token-shaped record would be dropped as empty. The call
+	// still has to appear in the request log — it consumed subscription balance, and
+	// without this every Grok image request was invisible while gpt-image ones were
+	// logged. ensurePublished records the call itself; cost comes from per-call
+	// pricing.
+	reporter.setInputContentBytes(req.Payload)
+	reporter.appendOutputChunk(data)
+	reporter.ensurePublished(execCtx.Context)
+
 	return cliproxyexecutor.Response{Payload: data, Headers: httpResp.Header.Clone()}, nil
 }
 

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -26,7 +25,7 @@ import (
 const ollamaCloudNativeKeepAlive = "30m"
 
 func (e *OllamaCloudExecutor) executeNativeChat(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
-	execCtx, translated, body, cacheKey, promptText, err := e.prepareNativeChat(ctx, auth, req, opts, false)
+	execCtx, translated, body, err := e.prepareNativeChat(ctx, auth, req, opts, false)
 	if err != nil {
 		return resp, err
 	}
@@ -58,7 +57,7 @@ func (e *OllamaCloudExecutor) executeNativeChat(ctx context.Context, auth *clipr
 		return resp, err
 	}
 	recorder.AppendResponseChunk(data)
-	openAIResponse := ollamaNativeChatToOpenAI(data, execCtx.BaseModel, cacheKey, promptText)
+	openAIResponse := ollamaNativeChatToOpenAI(data, execCtx.BaseModel, ollamaPromptCacheEstimatorFromContext(execCtx.Context))
 	reporter.publishWithContent(execCtx.Context, parseOpenAIUsage(openAIResponse), string(req.Payload), string(openAIResponse))
 	reporter.ensurePublished(execCtx.Context)
 
@@ -68,10 +67,11 @@ func (e *OllamaCloudExecutor) executeNativeChat(ctx context.Context, auth *clipr
 }
 
 func (e *OllamaCloudExecutor) executeNativeChatStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
-	execCtx, translated, body, cacheKey, promptText, err := e.prepareNativeChat(ctx, auth, req, opts, true)
+	execCtx, translated, body, err := e.prepareNativeChat(ctx, auth, req, opts, true)
 	if err != nil {
 		return nil, err
 	}
+	estimator := ollamaPromptCacheEstimatorFromContext(execCtx.Context)
 	reporter := execCtx.Reporter()
 	defer reporter.trackFailure(execCtx.Context, &err)
 
@@ -117,7 +117,7 @@ func (e *OllamaCloudExecutor) executeNativeChatStream(ctx context.Context, auth 
 				continue
 			}
 			recorder.AppendResponseChunk(line)
-			openAILines, usage, usageSeen := ollamaNativeStreamChunkToOpenAI(line, execCtx.BaseModel, responseID, cacheKey, promptText, &roleSent)
+			openAILines, usage, usageSeen := ollamaNativeStreamChunkToOpenAI(line, execCtx.BaseModel, responseID, estimator, &roleSent)
 			if usageSeen {
 				lastUsage = usage
 				hasUsage = true
@@ -161,7 +161,7 @@ func (e *OllamaCloudExecutor) executeNativeChatStream(ctx context.Context, auth 
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
 }
 
-func (e *OllamaCloudExecutor) prepareNativeChat(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) (*ExecutionContext, []byte, []byte, string, string, error) {
+func (e *OllamaCloudExecutor) prepareNativeChat(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, stream bool) (*ExecutionContext, []byte, []byte, error) {
 	execCtx := newExecutionContext(ctx, e.Identifier(), e.cfg, auth, req, opts, ExecutionOptions{
 		TargetFormat:      sdktranslator.FormatOpenAI,
 		TranslateAsStream: stream,
@@ -171,14 +171,13 @@ func (e *OllamaCloudExecutor) prepareNativeChat(ctx context.Context, auth *clipr
 	translated = execCtx.ApplyPayloadConfig(translated, originalTranslated)
 	updated, err := thinking.ApplyThinking(translated, req.Model, execCtx.SourceFormat.String(), sdktranslator.FormatOpenAI.String(), e.Identifier())
 	if err != nil {
-		return nil, nil, nil, "", "", err
+		return nil, nil, nil, err
 	}
 	updated = applyOllamaCloudImagePolicy(req, updated)
 	updated = normalizeOpenAIChatToolCallMessages(updated)
 	updated = applyProviderPromptCaching(updated, req.Payload, auth, e.Identifier(), execCtx.BaseModel, sdktranslator.FormatOpenAI, opts)
-	body, promptText := ollamaNativeChatRequest(updated, stream)
-	cacheKey := ollamaNativeCacheKey(auth, execCtx.BaseModel, req.Payload, updated, opts)
-	return execCtx, updated, body, cacheKey, promptText, nil
+	body := ollamaNativeChatRequest(updated, stream)
+	return execCtx, updated, body, nil
 }
 
 func (e *OllamaCloudExecutor) doNativeChatJSON(execCtx *ExecutionContext, auth *cliproxyauth.Auth, body []byte, stream bool) (*http.Response, error) {
@@ -226,12 +225,12 @@ func ollamaCloudNativeBaseURL(baseURL string) string {
 	return base
 }
 
-func ollamaNativeChatRequest(openAIChat []byte, stream bool) ([]byte, string) {
+func ollamaNativeChatRequest(openAIChat []byte, stream bool) []byte {
 	var root map[string]any
 	if err := json.Unmarshal(openAIChat, &root); err != nil {
-		return openAIChat, ""
+		return openAIChat
 	}
-	messages, promptText := ollamaNativeMessages(root["messages"])
+	messages := ollamaNativeMessages(root["messages"])
 	out := map[string]any{
 		"model":      strings.TrimSpace(fmt.Sprint(root["model"])),
 		"messages":   messages,
@@ -249,29 +248,14 @@ func ollamaNativeChatRequest(openAIChat []byte, stream bool) ([]byte, string) {
 	}
 	body, err := json.Marshal(out)
 	if err != nil {
-		return openAIChat, promptText
+		return openAIChat
 	}
-	return body, promptText
+	return body
 }
 
-func ollamaNativeCacheKey(auth *cliproxyauth.Auth, model string, source, translated []byte, opts cliproxyexecutor.Options) string {
-	seed := sessionPromptCacheSeed(opts, source)
-	if seed == "" {
-		seed = sessionPromptCacheSeed(opts, translated)
-	}
-	if seed == "" {
-		seed = strings.TrimSpace(gjson.GetBytes(source, "prompt_cache_key").String())
-	}
-	if seed == "" {
-		seed = strings.TrimSpace(gjson.GetBytes(translated, "prompt_cache_key").String())
-	}
-	return scopedPromptCacheKey(auth, model, seed)
-}
-
-func ollamaNativeMessages(raw any) ([]any, string) {
+func ollamaNativeMessages(raw any) []any {
 	items, _ := raw.([]any)
 	messages := make([]any, 0, len(items))
-	var prompt strings.Builder
 	toolNames := map[string]string{}
 	for _, item := range items {
 		msg, ok := item.(map[string]any)
@@ -299,12 +283,8 @@ func ollamaNativeMessages(raw any) ([]any, string) {
 			}
 		}
 		messages = append(messages, next)
-		prompt.WriteString(role)
-		prompt.WriteByte('\n')
-		prompt.WriteString(content)
-		prompt.WriteByte('\n')
 	}
-	return messages, prompt.String()
+	return messages
 }
 
 func normalizeOllamaNativeToolCalls(calls []any, toolNames map[string]string) {
@@ -433,11 +413,11 @@ func ollamaNativeOptions(root map[string]any) map[string]any {
 	return options
 }
 
-func ollamaNativeChatToOpenAI(native []byte, model, cacheKey, promptText string) []byte {
+func ollamaNativeChatToOpenAI(native []byte, model string, estimator *ollamaPromptCacheEstimator) []byte {
 	root := gjson.ParseBytes(native)
 	promptTokens := root.Get("prompt_eval_count").Int()
 	outputTokens := root.Get("eval_count").Int()
-	cachedTokens := ollamaPromptCacheEstimateAndStore(cacheKey, promptText, promptTokens)
+	cachedTokens := estimator.estimate(promptTokens)
 	out := `{"id":"","object":"chat.completion","created":0,"model":"","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"prompt_tokens_details":{"cached_tokens":0}}}`
 	out, _ = sjson.Set(out, "id", fmt.Sprintf("chatcmpl_%x", time.Now().UnixNano()))
 	out, _ = sjson.Set(out, "created", time.Now().Unix())
@@ -456,7 +436,7 @@ func ollamaNativeChatToOpenAI(native []byte, model, cacheKey, promptText string)
 	return []byte(out)
 }
 
-func ollamaNativeStreamChunkToOpenAI(line []byte, model, responseID, cacheKey, promptText string, roleSent *bool) ([][]byte, coreusage.Detail, bool) {
+func ollamaNativeStreamChunkToOpenAI(line []byte, model, responseID string, estimator *ollamaPromptCacheEstimator, roleSent *bool) ([][]byte, coreusage.Detail, bool) {
 	root := gjson.ParseBytes(line)
 	created := time.Now().Unix()
 	var out [][]byte
@@ -481,7 +461,7 @@ func ollamaNativeStreamChunkToOpenAI(line []byte, model, responseID, cacheKey, p
 	out = append(out, ollamaOpenAIStreamDoneLine(responseID, model, created, root.Get("done_reason").String()))
 	promptTokens := root.Get("prompt_eval_count").Int()
 	outputTokens := root.Get("eval_count").Int()
-	cachedTokens := ollamaPromptCacheEstimateAndStore(cacheKey, promptText, promptTokens)
+	cachedTokens := estimator.estimate(promptTokens)
 	usage := coreusage.Detail{
 		InputTokens:              promptTokens,
 		OutputTokens:             outputTokens,
@@ -543,52 +523,5 @@ func ollamaOpenAIStreamDoneLine(id, model string, created int64, reason string) 
 	return append(append([]byte("data: "), payload...), '\n', '\n')
 }
 
-type ollamaPromptCacheEntry struct {
-	prompt    string
-	expiresAt time.Time
-}
-
-var ollamaPromptCache sync.Map
-
-func ollamaPromptCacheEstimateAndStore(cacheKey, prompt string, inputTokens int64) int64 {
-	cacheKey = strings.TrimSpace(cacheKey)
-	if cacheKey == "" || strings.TrimSpace(prompt) == "" || inputTokens <= 0 {
-		return 0
-	}
-	now := time.Now()
-	var cached int64
-	if raw, ok := ollamaPromptCache.Load(cacheKey); ok {
-		entry, _ := raw.(ollamaPromptCacheEntry)
-		if now.Before(entry.expiresAt) {
-			common := commonPrefixLen(entry.prompt, prompt)
-			if common >= 4096 && len(prompt) > 0 {
-				cached = inputTokens * int64(common) / int64(len(prompt))
-				if cached > inputTokens {
-					cached = inputTokens
-				}
-			}
-		}
-	}
-	// Native Ollama exercises the real runner prefix cache via /api/chat +
-	// keep_alive, but its API reports prompt_eval_count, not cached token count.
-	// Expose an OpenAI-compatible cache read estimate from the stable session
-	// prefix so dashboards can show the hit without claiming provider reporting.
-	ollamaPromptCache.Store(cacheKey, ollamaPromptCacheEntry{
-		prompt:    prompt,
-		expiresAt: now.Add(30 * time.Minute),
-	})
-	return cached
-}
-
-func commonPrefixLen(a, b string) int {
-	limit := len(a)
-	if len(b) < limit {
-		limit = len(b)
-	}
-	for i := 0; i < limit; i++ {
-		if a[i] != b[i] {
-			return i
-		}
-	}
-	return limit
-}
+// Prompt-cache estimation lives in ollama_cloud_prompt_cache.go so the native,
+// Anthropic-compatible and OpenAI-compatible paths share one estimate per request.

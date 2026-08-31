@@ -245,11 +245,16 @@ type oauthProviderModelConfigRow struct {
 	Enabled     bool
 }
 
+// appendOAuthProviderModelConfigs makes catalog rows routable for an OAuth
+// credential. mappedOwners carries the tenant's own auth-group→owner mappings so
+// operators can attach a model to a channel without the owner name having to
+// match a built-in provider alias.
 func appendOAuthProviderModelConfigs(
 	models []*ModelInfo,
 	provider string,
 	authKind string,
 	rows []oauthProviderModelConfigRow,
+	mappedOwners []string,
 ) []*ModelInfo {
 	if !strings.EqualFold(strings.TrimSpace(authKind), "oauth") {
 		return models
@@ -259,6 +264,14 @@ func appendOAuthProviderModelConfigs(
 		return models
 	}
 	owners := modelConfigOwnerAliases(provider)
+	for _, owner := range mappedOwners {
+		if key := normalizeModelConfigOwner(owner); key != "" {
+			if owners == nil {
+				owners = make(map[string]struct{}, len(mappedOwners))
+			}
+			owners[key] = struct{}{}
+		}
+	}
 	if len(owners) == 0 {
 		return models
 	}
@@ -323,6 +336,10 @@ func modelConfigOwnerAliases(provider string) map[string]struct{} {
 		values = append(values, "anthropic", "claude-code")
 	case "gemini", "gemini-cli", "vertex":
 		values = append(values, "google")
+	case "kimi":
+		// Kimi models are owned by Moonshot in the catalog, so a library row added
+		// under the vendor name has to resolve back to the kimi channel.
+		values = append(values, "moonshot", "moonshotai")
 	}
 	out := make(map[string]struct{}, len(values))
 	for _, value := range values {
@@ -367,6 +384,16 @@ func buildClineConfigModels(entry *config.ClineKey) []*ModelInfo {
 	}
 	models := filterConfigModels(entry.Models, isClinePassConfigModelID)
 	return buildConfigModels(models, "cline", "cline", nil)
+}
+
+func buildCommandCodeConfigModels(entry *config.CommandCodeKey) []*ModelInfo {
+	if entry == nil || len(entry.Models) == 0 {
+		return nil
+	}
+	models := filterConfigModels(entry.Models, func(name string) bool {
+		return !isClinePassConfigModelID(name)
+	})
+	return buildConfigModels(models, "command-code", "commandcode", nil)
 }
 
 func buildOllamaCloudConfigModels(entry *config.OllamaCloudKey) []*ModelInfo {

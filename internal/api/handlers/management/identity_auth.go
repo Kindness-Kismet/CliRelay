@@ -47,8 +47,8 @@ func principalFromContext(c *gin.Context) (identity.Principal, bool) {
 func (h *Handler) nextWithManagementAudit(c *gin.Context) {
 	if c != nil && c.Request != nil && isTenantGovernancePath(c.Request.URL.Path) {
 		if principal, ok := principalFromContext(c); ok && principal.Kind == "service_credential" {
-			h.recordManagementAudit(c, principal, "denied")
 			identityError(c, identity.ErrPermissionDenied)
+			h.recordManagementDenial(c, principal, denialServiceCredential)
 			return
 		}
 		if h.identity() == nil {
@@ -59,11 +59,26 @@ func (h *Handler) nextWithManagementAudit(c *gin.Context) {
 	c.Next()
 	principal, ok := principalFromContext(c)
 	if ok {
-		h.recordManagementAudit(c, principal, "")
+		h.recordManagementAudit(c, principal)
 	}
 }
 
-func (h *Handler) recordManagementAudit(c *gin.Context, principal identity.Principal, forcedResult string) {
+// recordManagementDenial writes the audit row for a refused request.
+//
+// It must be called *after* the response has been written. gin reports 200 until
+// something sets a status, so recording first stamped every denial row with
+// http.status 200 while the client received 403 — a live trail held 1,623 refusals
+// that all claimed to have succeeded, which is precisely backwards for the rows an
+// audit reader reaches for first.
+func (h *Handler) recordManagementDenial(c *gin.Context, principal identity.Principal, denial managementDenial) {
+	h.recordManagementAuditWithDenial(c, principal, denial)
+}
+
+func (h *Handler) recordManagementAudit(c *gin.Context, principal identity.Principal) {
+	h.recordManagementAuditWithDenial(c, principal, "")
+}
+
+func (h *Handler) recordManagementAuditWithDenial(c *gin.Context, principal identity.Principal, denial managementDenial) {
 	service := h.identity()
 	if service == nil || c == nil || c.Request == nil {
 		return
@@ -81,22 +96,38 @@ func (h *Handler) recordManagementAudit(c *gin.Context, principal identity.Princ
 	write := c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead
 	sensitiveRead := strings.Contains(relative, "/content") || strings.Contains(relative, "/egress") ||
 		strings.Contains(relative, "/export") || strings.Contains(relative, "/download")
-	result := forcedResult
-	if result == "" {
-		switch status := c.Writer.Status(); {
-		case status < http.StatusBadRequest:
-			result = "success"
-		case status == http.StatusUnauthorized || status == http.StatusForbidden:
-			result = "denied"
-		default:
-			result = "failed"
+	// Derived from the status in every case, including denials: those are recorded
+	// after the response, so the code is real rather than gin's unwritten default.
+	var result string
+	switch status := c.Writer.Status(); {
+	case status < http.StatusBadRequest:
+		result = auditResultSuccess
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		result = auditResultDenied
+	default:
+		result = auditResultFailed
+	}
+	if result == auditResultSuccess && isTenantGovernancePath(c.Request.URL.Path) {
+		return
+	}
+	if !shouldRecordManagementAudit(write, sensitiveRead, result) {
+		return
+	}
+	action := "management." + strings.ToLower(c.Request.Method)
+	// Reads that reach this point were refused, and a client polling a route it
+	// lacks permission for repeats that refusal indefinitely. Collapse the repeats
+	// into one row per window; writes are never collapsed because each one is a
+	// distinct attempt to change something.
+	var repeat map[string]any
+	if !write {
+		key := auditRepeatKey(principal.EffectiveTenant.ID, principal.Kind, principal.User.ID, action, resourceType, resourceID, result)
+		allowed, folded := h.auditRepeat.admit(key, time.Now())
+		if !allowed {
+			return
 		}
-	}
-	if result == "success" && isTenantGovernancePath(c.Request.URL.Path) {
-		return
-	}
-	if result == "success" && !write && !sensitiveRead {
-		return
+		if folded > 0 {
+			repeat = auditRepeatNote(folded, auditRepeatWindow)
+		}
 	}
 	// Prefer middleware-assigned ID; fall back to generating one so audit rows stay correlatable
 	// even if request-id middleware skipped this path (e.g. older deployments / test routers).
@@ -114,37 +145,44 @@ func (h *Handler) recordManagementAudit(c *gin.Context, principal identity.Princ
 	routePath := strings.TrimPrefix(c.Request.URL.Path, "/v0/management")
 	handlerName := c.Request.Method + " " + routePath
 	permission := permissionForManagementRequest(c.Request.Method, c.Request.URL.Path)
+	changes := map[string]any{
+		"http": map[string]any{
+			"method": c.Request.Method,
+			"path":   c.Request.URL.Path,
+			"status": c.Writer.Status(),
+		},
+		"permission": permission,
+		// call_chain reconstructs the management request path for audit detail UI.
+		"call_chain": []map[string]any{
+			{"step": 1, "layer": "http", "name": c.Request.Method + " " + c.Request.URL.Path, "detail": "client request"},
+			{"step": 2, "layer": "middleware", "name": "management.auth", "detail": "session + RBAC"},
+			{"step": 3, "layer": "handler", "name": handlerName, "package": "internal/api/handlers/management"},
+			{"step": 4, "layer": "service", "name": "identity/management service", "resource": resourceType, "resource_id": resourceID},
+		},
+		"project_method": map[string]any{
+			"package":  "internal/api/handlers/management",
+			"handler":  handlerName,
+			"resource": resourceType,
+			"route":    routePath,
+		},
+	}
+	if denial != "" {
+		changes["denial_reason"] = string(denial)
+	}
+	if repeat != nil {
+		changes["repeat"] = repeat
+	}
 	service.RecordAudit(c.Request.Context(), identity.AuditEvent{
 		TenantID:       principal.EffectiveTenant.ID,
 		ActorKind:      principal.Kind,
 		ActorUserID:    principal.User.ID,
 		ActorSessionID: principal.SessionID,
-		Action:         "management." + strings.ToLower(c.Request.Method),
+		Action:         action,
 		ResourceType:   resourceType,
 		ResourceID:     resourceID,
 		Result:         result,
 		RequestID:      requestID,
-		Changes: map[string]any{
-			"http": map[string]any{
-				"method": c.Request.Method,
-				"path":   c.Request.URL.Path,
-				"status": c.Writer.Status(),
-			},
-			"permission": permission,
-			// call_chain reconstructs the management request path for audit detail UI.
-			"call_chain": []map[string]any{
-				{"step": 1, "layer": "http", "name": c.Request.Method + " " + c.Request.URL.Path, "detail": "client request"},
-				{"step": 2, "layer": "middleware", "name": "management.auth", "detail": "session + RBAC"},
-				{"step": 3, "layer": "handler", "name": handlerName, "package": "internal/api/handlers/management"},
-				{"step": 4, "layer": "service", "name": "identity/management service", "resource": resourceType, "resource_id": resourceID},
-			},
-			"project_method": map[string]any{
-				"package":  "internal/api/handlers/management",
-				"handler":  handlerName,
-				"resource": resourceType,
-				"route":    routePath,
-			},
-		},
+		Changes:        changes,
 	})
 }
 
@@ -180,60 +218,6 @@ func identityError(c *gin.Context, err error) {
 	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"code": code, "message": err.Error()}})
 }
 
-func (h *Handler) PostLogin(c *gin.Context) {
-	clientIP := c.ClientIP()
-	now := time.Now()
-	if remaining := h.loginThrottle.blockedFor(clientIP, now); remaining > 0 {
-		c.Header("Retry-After", retryAfterSecondsHeader(remaining.Round(time.Second)))
-		c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"code": "login_rate_limited", "message": "too many login attempts"}})
-		return
-	}
-
-	var body struct {
-		Username   string `json:"username"`
-		Password   string `json:"password"`
-		RememberMe bool   `json:"remember_me"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Username) == "" || body.Password == "" {
-		identityError(c, identity.ErrInvalidCredentials)
-		return
-	}
-	service := h.identity()
-	if service == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "identity_unavailable", "message": "identity service unavailable"}})
-		return
-	}
-	result, err := service.Login(c.Request.Context(), body.Username, body.Password, body.RememberMe, c.GetHeader("User-Agent"))
-	if err != nil {
-		h.loginThrottle.recordFailure(clientIP, now)
-		identityError(c, err)
-		return
-	}
-	h.loginThrottle.recordSuccess(clientIP)
-	c.JSON(http.StatusOK, result)
-}
-
-func (h *Handler) PostRefresh(c *gin.Context) {
-	var body struct {
-		RefreshToken string `json:"refresh_token"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.RefreshToken) == "" {
-		identityError(c, identity.ErrSessionRevoked)
-		return
-	}
-	service := h.identity()
-	if service == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "identity_unavailable", "message": "identity service unavailable"}})
-		return
-	}
-	result, err := service.RefreshSession(c.Request.Context(), body.RefreshToken)
-	if err != nil {
-		identityError(c, err)
-		return
-	}
-	c.JSON(http.StatusOK, result)
-}
-
 func (h *Handler) authenticateUserRequest(c *gin.Context) (identity.Principal, bool) {
 	token := bearerToken(c)
 	if !strings.HasPrefix(token, "cps_") {
@@ -247,36 +231,6 @@ func (h *Handler) authenticateUserRequest(c *gin.Context) (identity.Principal, b
 	}
 	c.Set(managementPrincipalKey, principal)
 	return principal, true
-}
-
-func (h *Handler) GetMe(c *gin.Context) {
-	principal, ok := h.authenticateUserRequest(c)
-	if !ok {
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"principal": principal})
-}
-
-func (h *Handler) PostLogout(c *gin.Context) {
-	principal, ok := h.authenticateUserRequest(c)
-	if !ok {
-		return
-	}
-	if err := h.identity().Logout(c.Request.Context(), principal.SessionID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "logout_failed", "message": err.Error()}})
-		return
-	}
-	h.identity().RecordAudit(c.Request.Context(), identity.AuditEvent{
-		TenantID:       principal.HomeTenant.ID,
-		ActorKind:      principal.Kind,
-		ActorUserID:    principal.User.ID,
-		ActorSessionID: principal.SessionID,
-		Action:         "auth.logout",
-		ResourceType:   "session",
-		ResourceID:     principal.SessionID,
-		Result:         "success",
-	})
-	c.Status(http.StatusNoContent)
 }
 
 func (h *Handler) PutPassword(c *gin.Context) {
@@ -591,6 +545,7 @@ func isTenantScopedManagementPath(path string) bool {
 		strings.HasPrefix(relative, "/opencode-go-api-key"),
 		strings.HasPrefix(relative, "/cline-api-key"),
 		strings.HasPrefix(relative, "/ollama-cloud-api-key"),
+		strings.HasPrefix(relative, "/commandcode-api-key"),
 		strings.HasPrefix(relative, "/codex-api-key"),
 		strings.HasPrefix(relative, "/vertex-api-key"),
 		strings.HasPrefix(relative, "/openai-compatibility"),

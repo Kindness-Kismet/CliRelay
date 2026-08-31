@@ -100,6 +100,7 @@ func cleanRuntimeSettingsFromYAML(configFilePath string) {
 		"opencode-go-api-key":    true,
 		"cline-api-key":          true,
 		"ollama-cloud-api-key":   true,
+		"commandcode-api-key":    true,
 		"openai-compatibility":   true,
 		"vertex-api-key":         true,
 		"claude-header-defaults": true,

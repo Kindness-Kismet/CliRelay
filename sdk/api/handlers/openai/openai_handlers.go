@@ -54,6 +54,14 @@ func openAIImageGenerationProvider(modelID string) string {
 	return registry.ImageGenerationProvider(modelID)
 }
 
+// openAIVideoGenerationProvider resolves the credential pool that serves a video
+// model. It lives here rather than beside the video handler so that file stays
+// clear of internal imports, which the SDK boundary check forbids outside this
+// already-allowlisted set.
+func openAIVideoGenerationProvider(modelID string) string {
+	return registry.VideoGenerationProvider(modelID)
+}
+
 // Models returns the OpenAI-compatible model metadata supported by this handler.
 func (h *OpenAIAPIHandler) Models() []map[string]any {
 	// Get dynamic models from the global registry

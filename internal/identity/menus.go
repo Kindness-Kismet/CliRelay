@@ -112,6 +112,7 @@ var MenuCatalog = []MenuSeed{
 	{Code: "models.plaza", ParentCode: "group.models", Type: "menu", Path: "/models/plaza", Component: "model-plaza", LabelKey: "shell.nav_model_plaza", Icon: "store", PermissionCode: "system.status.read", SortOrder: 5},
 	{Code: "models.catalog", ParentCode: "group.models", Type: "menu", Path: "/models/catalog", Component: "models", LabelKey: "shell.nav_models", Icon: "cpu", PermissionCode: "models.read", SortOrder: 10},
 	{Code: "models.image-generation", ParentCode: "group.models", Type: "menu", Path: "/models/image-generation", Component: "image-generation", LabelKey: "shell.nav_image_generation", Icon: "image", PermissionCode: "system.config.read", SortOrder: 20},
+	{Code: "models.video-generation", ParentCode: "group.models", Type: "menu", Path: "/models/video-generation", Component: "video-generation", LabelKey: "shell.nav_video_generation", Icon: "video", PermissionCode: "system.config.read", SortOrder: 25},
 	{Code: "models.channel-groups", ParentCode: "group.models", Type: "menu", Path: "/models/channel-groups", Component: "channel-groups", LabelKey: "shell.nav_channel_groups", Icon: "layers", PermissionCode: "routing.read", SortOrder: 30},
 	{Code: "models.proxies", ParentCode: "group.models", Type: "menu", Path: "/models/proxies", Component: "proxies", LabelKey: "shell.nav_proxies", Icon: "network", PermissionCode: "proxies.read", SortOrder: 40},
 	// Organization
@@ -119,6 +120,7 @@ var MenuCatalog = []MenuSeed{
 	{Code: "governance.users", ParentCode: "group.governance", Type: "menu", Path: "/governance/users", Component: "users", LabelKey: "shell.nav_users", Icon: "user-round", PermissionCode: "tenant.users.read", SortOrder: 20},
 	{Code: "governance.roles", ParentCode: "group.governance", Type: "menu", Path: "/governance/roles", Component: "roles", LabelKey: "shell.nav_roles", Icon: "shield-check", PermissionCode: "tenant.roles.read", SortOrder: 30},
 	{Code: "governance.audit", ParentCode: "group.governance", Type: "menu", Path: "/governance/audit-logs", Component: "audit-logs", LabelKey: "shell.nav_audit_logs", Icon: "file-text", PermissionCode: "tenant.audit.read", SortOrder: 40},
+	{Code: "governance.ip-access", ParentCode: "group.governance", Type: "menu", Path: "/governance/ip-access", Component: "ip-access", LabelKey: "shell.nav_ip_access", Icon: "shield-ban", PermissionCode: "platform.ip_access.read", SortOrder: 50},
 	// System settings only
 	{Code: "system.config", ParentCode: "group.system", Type: "menu", Path: "/system/config", Component: "config", LabelKey: "shell.nav_config", Icon: "settings", PermissionCode: "system.config.read", SortOrder: 10},
 	{Code: MenuManagementCode, ParentCode: "group.system", Type: "menu", Path: "/system/menu-management", Component: "menu-management", LabelKey: "shell.nav_menu_management", Icon: "menu", PermissionCode: "platform.menus.read", SortOrder: 20},

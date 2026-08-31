@@ -13,6 +13,7 @@ type runtimeConfigSnapshot struct {
 	CodexKey            []runtimeAPIKeyModelConfig
 	ClineKey            []runtimeAPIKeyModelConfig
 	OllamaCloudKey      []runtimeAPIKeyModelConfig
+	CommandCodeKey      []runtimeAPIKeyModelConfig
 	BedrockKey          []runtimeBedrockKeyConfig
 	VertexCompatAPIKey  []runtimeAPIKeyModelConfig
 	OpenAICompatibility []runtimeOpenAICompatibilityConfig
@@ -100,6 +101,7 @@ func newRuntimeConfigSnapshot(cfg *sdkconfig.Config) *runtimeConfigSnapshot {
 		CodexKey:            cloneRuntimeAPIKeyModelConfigs(cfg.CodexKey),
 		ClineKey:            cloneRuntimeClineModelConfigs(cfg.ClineKey),
 		OllamaCloudKey:      cloneRuntimeAPIKeyModelConfigs(cfg.OllamaCloudKey),
+		CommandCodeKey:      cloneRuntimeAPIKeyModelConfigs(cfg.CommandCodeKey),
 		BedrockKey:          cloneRuntimeBedrockKeyConfigs(cfg.BedrockKey),
 		VertexCompatAPIKey:  cloneRuntimeAPIKeyModelConfigs(cfg.VertexCompatAPIKey),
 		OpenAICompatibility: cloneRuntimeOpenAICompatibilityConfigs(cfg.OpenAICompatibility),
@@ -196,6 +198,8 @@ func modelsForRuntimeConfigEntry[T any](entry T) []runtimeModelAliasEntry {
 	case sdkconfig.ClineKey:
 		return cloneRuntimeModelAliasEntries(typed.Models)
 	case sdkconfig.OllamaCloudKey:
+		return cloneRuntimeModelAliasEntries(typed.Models)
+	case sdkconfig.CommandCodeKey:
 		return cloneRuntimeModelAliasEntries(typed.Models)
 	case sdkconfig.VertexCompatKey:
 		return cloneRuntimeModelAliasEntries(typed.Models)

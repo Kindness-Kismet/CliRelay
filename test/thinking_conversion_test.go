@@ -824,26 +824,29 @@ func TestThinkingE2EMatrix_Suffix(t *testing.T) {
 			expectValue: "xhigh",
 			expectErr:   false,
 		},
-		// Case 69: Budget 0 → passthrough logic → none
+		// Case 69: Budget 0 means "do not think". For a model whose accepted
+		// levels are unknown the field is omitted rather than set to "none":
+		// "none" is an internal marker, not an OpenAI wire value, and Command
+		// Code answers 400 `expected one of "low"|"medium"|"high"|"xhigh"|"max"`
+		// on it. Omission is how the wire format says "use the model default".
 		{
 			name:        "69",
 			from:        "gemini",
 			to:          "openai",
 			model:       "user-defined-model(0)",
 			inputJSON:   `{"model":"user-defined-model(0)","contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
-			expectField: "reasoning_effort",
-			expectValue: "none",
+			expectField: "",
 			expectErr:   false,
 		},
-		// Case 70: Budget -1 → passthrough logic → auto
+		// Case 70: Budget -1 maps to "auto", which is the same kind of internal
+		// marker as "none" and is omitted for the same reason.
 		{
 			name:        "70",
 			from:        "gemini",
 			to:          "openai",
 			model:       "user-defined-model(-1)",
 			inputJSON:   `{"model":"user-defined-model(-1)","contents":[{"role":"user","parts":[{"text":"hi"}]}]}`,
-			expectField: "reasoning_effort",
-			expectValue: "auto",
+			expectField: "",
 			expectErr:   false,
 		},
 		// Case 71: Claude to Codex no suffix → injected default → medium
@@ -2106,26 +2109,30 @@ func TestThinkingE2EMatrix_Body(t *testing.T) {
 			expectValue: "xhigh",
 			expectErr:   false,
 		},
-		// Case 69: thinkingBudget=0 → none
+		// Case 69: thinkingBudget=0 means "do not think". For a model whose
+		// accepted levels are unknown the field is omitted rather than set to
+		// "none": "none" is an internal marker, not an OpenAI wire value, and
+		// Command Code answers 400 `expected one of
+		// "low"|"medium"|"high"|"xhigh"|"max"` on it. Omission is how the wire
+		// format says "use the model default".
 		{
 			name:        "69",
 			from:        "gemini",
 			to:          "openai",
 			model:       "user-defined-model",
 			inputJSON:   `{"model":"user-defined-model","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":0}}}`,
-			expectField: "reasoning_effort",
-			expectValue: "none",
+			expectField: "",
 			expectErr:   false,
 		},
-		// Case 70: thinkingBudget=-1 → auto
+		// Case 70: thinkingBudget=-1 maps to "auto", the same kind of internal
+		// marker as "none", omitted for the same reason.
 		{
 			name:        "70",
 			from:        "gemini",
 			to:          "openai",
 			model:       "user-defined-model",
 			inputJSON:   `{"model":"user-defined-model","contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":-1}}}`,
-			expectField: "reasoning_effort",
-			expectValue: "auto",
+			expectField: "",
 			expectErr:   false,
 		},
 		// Case 71: Claude no param → injected default → medium

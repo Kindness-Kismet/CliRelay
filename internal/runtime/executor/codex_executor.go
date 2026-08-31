@@ -120,6 +120,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return e.executeCompact(ctx, auth, req, opts)
 	}
 	req, opts = maybeStripCodexHistoryDataURLImagesOnRequest(req, opts)
+	ctx, convergedIDs := e.prepareCodexConvergence(ctx, auth)
 	execCtx := newExecutionContext(ctx, e.Identifier(), e.cfg, auth, req, opts, ExecutionOptions{
 		TargetFormat: sdktranslator.FromString("codex"),
 	})
@@ -158,6 +159,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		"safety_identifier",
 	})
 	body = maybeEnsureCodexImageGenerationTool(body, auth, execCtx.BaseModel, codexAdmissionHeadersFromContext(execCtx.Context))
+	body = applyCodexConvergenceClientMetadata(body, convergedIDs)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	httpReq, err := e.cacheHelper(execCtx.Context, auth, execCtx.SourceFormat, url, req, body)
@@ -250,6 +252,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 }
 
 func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+	ctx, convergedIDs := e.prepareCodexConvergence(ctx, auth)
 	execCtx := newExecutionContext(ctx, e.Identifier(), e.cfg, auth, req, opts, ExecutionOptions{
 		TargetFormat: sdktranslator.FromString("openai-response"),
 	})
@@ -277,6 +280,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body = ensureTranslatedCodexModel(body, execCtx.BaseModel)
 	body = sanitizeCodexResponsesRequest(body)
 	body, _ = sjson.DeleteBytes(body, "stream")
+	body = applyCodexConvergenceClientMetadata(body, convergedIDs)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
 	httpReq, err := e.cacheHelper(execCtx.Context, auth, execCtx.SourceFormat, url, req, body)
@@ -329,6 +333,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	// Shrink multi-MB Desktop history data URLs before translation/sanitize so later
 	// body-level passes never see the full base64 history.
 	req, opts = maybeStripCodexHistoryDataURLImagesOnRequest(req, opts)
+	ctx, convergedIDs := e.prepareCodexConvergence(ctx, auth)
 	execCtx := newExecutionContext(ctx, e.Identifier(), e.cfg, auth, req, opts, ExecutionOptions{
 		TargetFormat:      sdktranslator.FromString("codex"),
 		TranslateAsStream: true,
@@ -366,6 +371,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	})
 	body = ensureTranslatedCodexModel(body, execCtx.BaseModel)
 	body = maybeEnsureCodexImageGenerationTool(body, auth, execCtx.BaseModel, codexAdmissionHeadersFromContext(execCtx.Context))
+	body = applyCodexConvergenceClientMetadata(body, convergedIDs)
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	httpReq, err := e.cacheHelper(execCtx.Context, auth, execCtx.SourceFormat, url, req, body)
@@ -534,7 +540,9 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	if refreshToken == "" {
 		return auth, nil
 	}
-	svc := codexauth.NewCodexAuth(e.cfg)
+	// Refresh goes out through this credential's own proxy, not the process
+	// default, so the token is renewed from the address that uses it.
+	svc := codexauth.NewCodexAuthWithProxy(e.cfg, resolveAuthProxyURL(e.cfg, auth))
 	td, err := svc.RefreshTokensWithRetry(ctx, refreshToken, 3)
 	if err != nil {
 		return nil, err

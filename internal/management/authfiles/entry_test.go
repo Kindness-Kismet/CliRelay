@@ -80,6 +80,25 @@ func TestBuildEntryUsesTenantLocalPublicName(t *testing.T) {
 	}
 }
 
+func TestBuildEntryIncludesConcurrencyLimit(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "runtime-concurrency",
+		Provider: "claude",
+		Attributes: map[string]string{
+			"runtime_only":      "true",
+			"concurrency_limit": "3",
+		},
+	}
+
+	entry := BuildEntry(auth, EntryOptions{})
+	if entry == nil {
+		t.Fatal("expected runtime-only entry")
+	}
+	if got, _ := entry["concurrency_limit"].(int); got != 3 {
+		t.Fatalf("concurrency_limit = %v, want 3", entry["concurrency_limit"])
+	}
+}
+
 func TestBuildEntryAllowsRuntimeOnlyAuthWithoutPath(t *testing.T) {
 	auth := &coreauth.Auth{
 		ID:       "runtime",
@@ -193,8 +212,31 @@ func TestBuildEntryIncludesCodexOAuthAdmissionPayload(t *testing.T) {
 	if !ok {
 		t.Fatalf("codex_image_generation_bridge = %#v, want map", entry["codex_image_generation_bridge"])
 	}
+	// Absent metadata reports enabled: the executor injects the hosted tool unless an
+	// operator opts out, and the panel toggle has to show that same state.
+	if enabled, _ := bridge["enabled"].(bool); !enabled {
+		t.Fatalf("bridge.enabled = %#v, want true by default", bridge["enabled"])
+	}
+}
+
+func TestBuildEntryReportsCodexImageGenerationBridgeOptOut(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID:       "codex-oauth",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"runtime_only": "true",
+		},
+		Metadata: map[string]any{
+			"codex_image_generation_bridge": false,
+		},
+	}
+	entry := BuildEntry(auth, EntryOptions{})
+	bridge, ok := entry["codex_image_generation_bridge"].(map[string]any)
+	if !ok {
+		t.Fatalf("codex_image_generation_bridge = %#v, want map", entry["codex_image_generation_bridge"])
+	}
 	if enabled, _ := bridge["enabled"].(bool); enabled {
-		t.Fatalf("bridge.enabled = %#v, want false by default", bridge["enabled"])
+		t.Fatalf("bridge.enabled = %#v, want false when explicitly disabled", bridge["enabled"])
 	}
 }
 

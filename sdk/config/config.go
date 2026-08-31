@@ -37,6 +37,8 @@ type ClineKey = bridgeconfig.ClineKey
 type ClineModel = bridgeconfig.ClineModel
 type OllamaCloudKey = bridgeconfig.OllamaCloudKey
 type OllamaCloudModel = bridgeconfig.OllamaCloudModel
+type CommandCodeKey = bridgeconfig.CommandCodeKey
+type CommandCodeModel = bridgeconfig.CommandCodeModel
 type VertexCompatKey = bridgeconfig.VertexCompatKey
 type VertexCompatModel = bridgeconfig.VertexCompatModel
 type OpenAICompatibility = bridgeconfig.OpenAICompatibility
@@ -50,6 +52,7 @@ const (
 	DefaultBedrockRegion         = bridgeconfig.DefaultBedrockRegion
 	DefaultClineBaseURL          = bridgeconfig.DefaultClineBaseURL
 	DefaultOllamaCloudBaseURL    = bridgeconfig.DefaultOllamaCloudBaseURL
+	DefaultCommandCodeBaseURL    = bridgeconfig.DefaultCommandCodeBaseURL
 	DefaultPprofAddr             = bridgeconfig.DefaultPprofAddr
 )
 

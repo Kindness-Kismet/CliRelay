@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
@@ -23,7 +25,7 @@ func (s *Service) Run(ctx context.Context) error {
 
 	usage.StartDefault(ctx)
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGracePeriod())
 	defer shutdownCancel()
 	defer func() {
 		if err := s.Shutdown(shutdownCtx); err != nil {
@@ -160,9 +162,18 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 
 		if s.server != nil {
-			shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
-			if err := s.server.Stop(shutdownCtx); err != nil {
+			// Honour the caller's deadline instead of clamping it. Wrapping the
+			// incoming context in a fresh 30s timeout here silently overrode
+			// whatever budget the caller had granted, so widening the window in
+			// Run alone would have changed nothing: this was the limit that
+			// actually cut off in-flight requests.
+			stopCtx := ctx
+			if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+				var cancel context.CancelFunc
+				stopCtx, cancel = context.WithTimeout(ctx, shutdownGracePeriod())
+				defer cancel()
+			}
+			if err := s.server.Stop(stopCtx); err != nil {
 				log.Errorf("error stopping API server: %v", err)
 				if shutdownErr == nil {
 					shutdownErr = err
@@ -181,3 +192,30 @@ func (s *Service) ensureAuthDir() error {
 	}
 	return ensureServiceAuthDir(s.cfg.AuthDir)
 }
+
+// shutdownGracePeriod bounds how long a terminating process waits for requests
+// already in flight to finish.
+//
+// This is a proxy in front of LLMs: a single streamed answer routinely runs for
+// minutes. The previous fixed 30s meant a blue-green deploy cut off any request
+// still streaming 30 seconds after the old slot was signalled, which is a
+// user-visible failure even though the deploy itself reported success. The
+// window now defaults to five minutes and is overridable, so an operator can
+// match it to the systemd TimeoutStopSec on the host.
+//
+// Note this is an upper bound, not a delay: Shutdown returns as soon as the
+// last in-flight request completes.
+func shutdownGracePeriod() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("CLIRELAY_SHUTDOWN_GRACE"))
+	if raw == "" {
+		return defaultShutdownGracePeriod
+	}
+	parsed, err := time.ParseDuration(raw)
+	if err != nil || parsed <= 0 {
+		log.Warnf("cliproxy: ignoring invalid CLIRELAY_SHUTDOWN_GRACE %q, using %s", raw, defaultShutdownGracePeriod)
+		return defaultShutdownGracePeriod
+	}
+	return parsed
+}
+
+const defaultShutdownGracePeriod = 5 * time.Minute

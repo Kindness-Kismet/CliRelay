@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/xai"
@@ -44,22 +45,14 @@ func probeXAI(ctx context.Context, svc *managementapitools.Service, auth *coreau
 	quotas := make([]usage.QuotaWindowDTO, 0, 8)
 	if weeklyErr == nil {
 		quotas = append(quotas, parseXAIWeeklyBilling(weeklyBody)...)
-	} else if monthlyErr == nil {
-		quotas = append(quotas, parseXAIWeeklyBilling(monthlyBody)...)
 	}
 	if monthlyErr == nil {
 		quotas = append(quotas, parseXAIMonthlyBilling(monthlyBody)...)
-	} else if weeklyErr == nil {
-		quotas = append(quotas, parseXAIMonthlyBilling(weeklyBody)...)
 	}
 	if len(quotas) == 0 {
 		return ProbeResult{}, fmt.Errorf("empty_data")
 	}
-	planBody := monthlyBody
-	if monthlyErr != nil {
-		planBody = weeklyBody
-	}
-	return ProbeResult{Quotas: quotas, PlanType: resolveXAIPlan(planBody)}, nil
+	return ProbeResult{Quotas: quotas, PlanType: resolveXAIPlan(monthlyBody, weeklyBody)}, nil
 }
 
 // fetchXAIBillingParallel runs weekly and monthly fetches concurrently and
@@ -117,11 +110,12 @@ func parseXAIWeeklyBilling(body []byte) []usage.QuotaWindowDTO {
 		reset := weekly.ResetAt
 		resetAt = &reset
 	}
+	windowSeconds := weekly.WindowSeconds()
 	// Weekly cards already show relative reset from ResetAt; keep Meta empty so the
 	// UI is not flooded with raw ISO period strings like "2026-07-16T06:45:51+00:00 - …".
 	out := []usage.QuotaWindowDTO{{
 		QuotaKey: "weekly_limit", QuotaLabel: "xai_quota.weekly_limit", Percent: &weekly.RemainingPercent,
-		Value: formatPercent(weekly.RemainingPercent), ResetAt: resetAt, WindowSeconds: 604800,
+		Value: formatPercent(weekly.RemainingPercent), ResetAt: resetAt, WindowSeconds: windowSeconds,
 	}}
 	for index, product := range weekly.Products {
 		name := product.Name
@@ -129,10 +123,20 @@ func parseXAIWeeklyBilling(body []byte) []usage.QuotaWindowDTO {
 			name = fmt.Sprintf("Product %d", index+1)
 		}
 		remaining := product.RemainingPercent
-		out = append(out, usage.QuotaWindowDTO{
+		window := usage.QuotaWindowDTO{
 			QuotaKey: "product:" + name, QuotaLabel: "xai_quota.product_usage_named::" + name,
 			Percent: &remaining, Value: formatPercent(remaining),
-		})
+		}
+		// Attributable products carry the weekly window so the projection can pick
+		// them out of the snapshot series by width, the same way it selects every
+		// other provider's weekly quota. Products the proxy does not feed stay
+		// window-less: they are display-only, and giving them a weekly window would
+		// let the projection anchor on a share of the pool nobody here produced.
+		if product.Attributable {
+			window.ResetAt = resetAt
+			window.WindowSeconds = windowSeconds
+		}
+		out = append(out, window)
 	}
 	return out
 }
@@ -213,8 +217,52 @@ func xaiCentValue(cfg gjson.Result, paths ...string) (float64, bool) {
 	return value.Float(), true
 }
 
-func resolveXAIPlan(body []byte) string {
-	cfg := gjson.GetBytes(body, "config")
+func resolveXAIPlan(bodies ...[]byte) string {
+	var best string
+	var hasMonthlyConfig, hasWeeklyEntitlement bool
+	for _, body := range bodies {
+		if len(body) == 0 {
+			continue
+		}
+		if plan := resolveXAIPlanFromBody(body); plan != "" {
+			if plan == "supergrok-heavy" {
+				return plan
+			}
+			best = plan
+		}
+		if xaiHasMonthlyConfig(body) {
+			hasMonthlyConfig = true
+		}
+		if _, ok := xaiauth.ParseWeeklyBilling(body); ok {
+			hasWeeklyEntitlement = true
+		}
+	}
+	if best != "" {
+		return best
+	}
+	// xAI no longer always sends the old SuperGrok monthlyLimit cents
+	// (15000 / 150000). A monthly billing config plus weekly/product
+	// entitlement still means a paid subscription; free Grok only has
+	// the weekly credits endpoint.
+	if hasMonthlyConfig && hasWeeklyEntitlement {
+		return "supergrok"
+	}
+	return ""
+}
+
+func resolveXAIPlanFromBody(body []byte) string {
+	root := gjson.ParseBytes(body)
+	cfg := firstJSONResult(root, "config")
+	for _, src := range []gjson.Result{cfg, root} {
+		if plan := normalizeXAIPlanName(firstJSONResult(src,
+			"plan", "planType", "plan_type",
+			"tier", "subscriptionTier", "subscription_tier",
+			"subscriptionType", "subscription_type",
+			"entitlement", "entitlementName", "entitlement_name",
+		).String()); plan != "" {
+			return plan
+		}
+	}
 	limit, ok := xaiCentValue(cfg, "monthlyLimit", "monthly_limit")
 	if !ok {
 		return ""
@@ -224,6 +272,31 @@ func resolveXAIPlan(body []byte) string {
 		return "supergrok"
 	case 150000:
 		return "supergrok-heavy"
+	default:
+		return ""
+	}
+}
+
+func xaiHasMonthlyConfig(body []byte) bool {
+	cfg := gjson.GetBytes(body, "config")
+	if !cfg.Exists() {
+		return false
+	}
+	_, hasMonthlyLimit := xaiCentValue(cfg, "monthlyLimit", "monthly_limit")
+	_, hasUsed := xaiCentValue(cfg, "used")
+	_, hasOnDemandCap := xaiCentValue(cfg, "onDemandCap", "on_demand_cap")
+	return hasMonthlyLimit || hasUsed || hasOnDemandCap
+}
+
+func normalizeXAIPlanName(raw string) string {
+	compact := strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(raw)))
+	switch {
+	case compact == "":
+		return ""
+	case strings.Contains(compact, "heavy"):
+		return "supergrok-heavy"
+	case strings.Contains(compact, "supergrok"):
+		return "supergrok"
 	default:
 		return ""
 	}

@@ -328,6 +328,14 @@ func firstOpenAIImagesFormValue(values map[string][]string, key, fallback string
 	return fallback
 }
 
+// ginRequestContext carries the gin context down to the executor layer, which needs
+// it for request-scoped logging and routing metadata. It lives beside the image
+// handler because that file already carries the internal util import the SDK
+// boundary check pins per file.
+func ginRequestContext(c *gin.Context) context.Context {
+	return context.WithValue(c.Request.Context(), util.ContextKeyGin, c)
+}
+
 func requestImageExecutionMetadata(c *gin.Context) map[string]any {
 	meta := map[string]any{
 		coreexecutor.SinglePickMetadataKey: true,

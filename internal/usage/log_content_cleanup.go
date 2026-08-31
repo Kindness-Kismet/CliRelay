@@ -58,9 +58,17 @@ func cleanupOversizedLogContentQuerierWithTotalInternal(q logContentQuerier, tot
 	var deletedBytes int64
 	for totalBytes > maxBytes {
 		required := totalBytes - maxBytes
-		ids, reclaimed, err := oldestContentRowsForTrim(q, required, 200)
+		ids, reclaimed, err := oldestContentRowsForTrim(q, required, 200, true)
 		if err != nil {
 			return deletedBytes, deletedRows, err
+		}
+		if len(ids) == 0 || reclaimed <= 0 {
+			// Only failure diagnostics are left. The cap still has to hold, so
+			// fall back to plain FIFO rather than let the table grow unbounded.
+			ids, reclaimed, err = oldestContentRowsForTrim(q, required, 200, false)
+			if err != nil {
+				return deletedBytes, deletedRows, err
+			}
 		}
 		if len(ids) == 0 || reclaimed <= 0 {
 			break
@@ -96,7 +104,25 @@ func queryStoredContentBytes(q logContentQuerier) (int64, error) {
 	return totalBytes.Int64, nil
 }
 
-func oldestContentRowsForTrim(q logContentQuerier, requiredBytes int64, limit int) ([]int64, int64, error) {
+// oldestContentRowsForTrim picks the rows to drop when stored content exceeds
+// the size cap.
+//
+// preserveFailed keeps failure diagnostics out of that first pass. A failed
+// request stores a few hundred bytes of upstream error; a successful one stores
+// a request and response body that routinely run into hundreds of kilobytes.
+// Under plain FIFO the successes consume the entire budget and carry the
+// diagnostics out with them, so a 3-day retention setting held under an hour of
+// rows in production and the upstream error explaining an incident was gone
+// before anyone opened the log. Evicting successes first costs little — they
+// are what fills the cap — and buys the error detail the retention it was
+// configured for.
+//
+// The lookup stays on the timestamp index and probes request_logs by primary
+// key per candidate; failures are a small minority, so the scan reaches its
+// limit in about as many rows as before. It matches on log_id alone, as the
+// delete below does: log ids come from one sequence, and leaving tenant_id out
+// can only ever keep a diagnostic row longer, never drop one early.
+func oldestContentRowsForTrim(q logContentQuerier, requiredBytes int64, limit int, preserveFailed bool) ([]int64, int64, error) {
 	if q == nil || requiredBytes <= 0 {
 		return nil, 0, nil
 	}
@@ -104,13 +130,19 @@ func oldestContentRowsForTrim(q logContentQuerier, requiredBytes int64, limit in
 		limit = 200
 	}
 
-	rows, err := q.Query(
-		`SELECT log_id, CAST(length(input_content) AS INTEGER) + CAST(length(output_content) AS INTEGER) + CAST(length(detail_content) AS INTEGER) AS size
+	query := `SELECT log_id, CAST(length(input_content) AS INTEGER) + CAST(length(output_content) AS INTEGER) + CAST(length(detail_content) AS INTEGER) AS size
 		 FROM request_log_content
 		 ORDER BY timestamp ASC, log_id ASC
-		 LIMIT ?`,
-		limit,
-	)
+		 LIMIT ?`
+	if preserveFailed {
+		query = `SELECT c.log_id, CAST(length(c.input_content) AS INTEGER) + CAST(length(c.output_content) AS INTEGER) + CAST(length(c.detail_content) AS INTEGER) AS size
+		 FROM request_log_content c
+		 WHERE NOT EXISTS (SELECT 1 FROM request_logs l WHERE l.id = c.log_id AND l.failed = 1)
+		 ORDER BY c.timestamp ASC, c.log_id ASC
+		 LIMIT ?`
+	}
+
+	rows, err := q.Query(query, limit)
 	if err != nil {
 		return nil, 0, fmt.Errorf("usage: query oldest content rows: %w", err)
 	}

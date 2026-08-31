@@ -289,7 +289,7 @@ func applyVisionFallback(req cliproxyexecutor.Request, opts cliproxyexecutor.Opt
 
 func openAICompatSupportsVisionFallback(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "cline", "ollama-cloud":
+	case "cline", "ollama-cloud", commandCodeProvider:
 		return true
 	default:
 		return false
@@ -302,6 +302,8 @@ func openAICompatVisionFallbackModel(cfg *config.Config, auth *cliproxyauth.Auth
 		return configOpenAICompatVisionFallbackModel(cfg, auth, "cline")
 	case "ollama-cloud":
 		return configOpenAICompatVisionFallbackModel(cfg, auth, "ollama-cloud")
+	case commandCodeProvider:
+		return configOpenAICompatVisionFallbackModel(cfg, auth, commandCodeProvider)
 	default:
 		return ""
 	}
@@ -345,6 +347,18 @@ func configOpenAICompatVisionFallbackModel(cfg *config.Config, auth *cliproxyaut
 	case "ollama-cloud":
 		for i := range cfg.OllamaCloudKey {
 			entry := &cfg.OllamaCloudKey[i]
+			if !strings.EqualFold(strings.TrimSpace(entry.APIKey), apiKey) {
+				continue
+			}
+			fallback := strings.TrimSpace(entry.VisionFallbackModel)
+			if opencodeGoModelExcluded(fallback, strings.Join(entry.ExcludedModels, ",")) {
+				return ""
+			}
+			return fallback
+		}
+	case commandCodeProvider:
+		for i := range cfg.CommandCodeKey {
+			entry := &cfg.CommandCodeKey[i]
 			if !strings.EqualFold(strings.TrimSpace(entry.APIKey), apiKey) {
 				continue
 			}

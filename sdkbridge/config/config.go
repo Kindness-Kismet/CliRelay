@@ -34,6 +34,8 @@ type ClineKey = internalconfig.ClineKey
 type ClineModel = internalconfig.ClineModel
 type OllamaCloudKey = internalconfig.OllamaCloudKey
 type OllamaCloudModel = internalconfig.OllamaCloudModel
+type CommandCodeKey = internalconfig.CommandCodeKey
+type CommandCodeModel = internalconfig.CommandCodeModel
 type VertexCompatKey = internalconfig.VertexCompatKey
 type VertexCompatModel = internalconfig.VertexCompatModel
 type OpenAICompatibility = internalconfig.OpenAICompatibility
@@ -47,6 +49,7 @@ const (
 	DefaultBedrockRegion         = internalconfig.DefaultBedrockRegion
 	DefaultClineBaseURL          = internalconfig.DefaultClineBaseURL
 	DefaultOllamaCloudBaseURL    = internalconfig.DefaultOllamaCloudBaseURL
+	DefaultCommandCodeBaseURL    = internalconfig.DefaultCommandCodeBaseURL
 	DefaultPprofAddr             = internalconfig.DefaultPprofAddr
 )
 

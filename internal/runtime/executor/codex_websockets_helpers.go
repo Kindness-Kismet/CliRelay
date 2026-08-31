@@ -207,6 +207,13 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, cfg *c
 		misc.EnsureHeader(headers, ginHeaders, "User-Agent", codexUserAgent)
 	}
 
+	// Device fingerprint convergence, narrowed to the installation identifier so
+	// the stronger modes cannot invent a session here. In device mode the
+	// snapshot instead carries scope-mapped copies of the client's own ids, which
+	// is the same mapping the handshake applied to prompt_cache_key above, so
+	// Session_id, Conversation_id and the cache key stay in one cache domain.
+	applyCodexConvergenceHeaders(headers, resolveCodexConvergedIDs(cfg, auth, ginHeaders).deviceOnly(), ginHeaders)
+
 	// Match upstream: only attach Session_id when UA indicates a desktop client, and do not forward UA over websocket.
 	if strings.Contains(headers.Get("User-Agent"), "Mac OS") && strings.TrimSpace(headers.Get("Session_id")) == "" {
 		headers.Set("Session_id", uuid.NewString())

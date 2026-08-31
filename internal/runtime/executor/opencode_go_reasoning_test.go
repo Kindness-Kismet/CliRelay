@@ -98,6 +98,70 @@ func TestOpenCodeGoSessionID_Empty(t *testing.T) {
 	}
 }
 
+func TestOpenCodeGoSessionID_FromSessionStickyKey(t *testing.T) {
+	// Ordinary HTTP turns never set ExecutionSessionMetadataKey (websocket only),
+	// so the sticky key is what carries session identity for header-based clients.
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.SessionStickyMetadataKey: "header:x-deepseek-harness-session-id:ses_abc",
+		},
+	}
+	if got, want := opencodeGoSessionID(opts, nil), "header:x-deepseek-harness-session-id:ses_abc"; got != want {
+		t.Errorf("opencodeGoSessionID = %q, want %q", got, want)
+	}
+}
+
+func TestOpenCodeGoSessionID_StickyKeyBeatsAuthFallback(t *testing.T) {
+	// The regression this guards: two concurrent sessions on ONE api key must not
+	// collapse onto the same reasoning slot (reasoningCacheMaxEntriesPerKey == 1),
+	// or each turn is injected with the other session's reasoning_content and the
+	// upstream prefix cache is lost.
+	auth := &cliproxyauth.Auth{ID: "auth-shared"}
+	first := opencodeGoSessionID(cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.SessionStickyMetadataKey: "header:x-deepseek-harness-session-id:ses_first",
+		},
+	}, auth)
+	second := opencodeGoSessionID(cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.SessionStickyMetadataKey: "header:x-deepseek-harness-session-id:ses_second",
+		},
+	}, auth)
+	if first == second {
+		t.Fatalf("expected distinct session ids for distinct sticky keys, both were %q", first)
+	}
+	if first == auth.ID || second == auth.ID {
+		t.Fatalf("expected sticky key to win over auth fallback, got %q and %q", first, second)
+	}
+}
+
+func TestOpenCodeGoSessionID_ExecutionSessionBeatsStickyKey(t *testing.T) {
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.ExecutionSessionMetadataKey: "exec_session",
+			cliproxyexecutor.SessionStickyMetadataKey:    "header:x-deepseek-harness-session-id:ses_abc",
+		},
+	}
+	if got := opencodeGoSessionID(opts, nil); got != "exec_session" {
+		t.Errorf("opencodeGoSessionID = %q, want exec_session", got)
+	}
+}
+
+func TestOpenCodeGoSessionID_BlankMetadataFallsThrough(t *testing.T) {
+	// A present-but-blank metadata value must not short-circuit the remaining
+	// candidates: blanks previously returned "" and skipped the auth fallback.
+	auth := &cliproxyauth.Auth{ID: "auth-1"}
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.ExecutionSessionMetadataKey: "   ",
+			cliproxyexecutor.SessionStickyMetadataKey:    "  ",
+		},
+	}
+	if got := opencodeGoSessionID(opts, auth); got != "auth-1" {
+		t.Errorf("opencodeGoSessionID = %q, want auth-1", got)
+	}
+}
+
 func TestOpenCodeGoSessionID_FallbackToAuthID(t *testing.T) {
 	auth := &cliproxyauth.Auth{ID: "opencode-go:apikey:abc123"}
 	opts := cliproxyexecutor.Options{}

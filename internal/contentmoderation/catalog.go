@@ -95,7 +95,7 @@ func ProviderChannelRefs(cfg *config.Config) []ChannelRef {
 	if cfg == nil {
 		return nil
 	}
-	refs := make([]ChannelRef, 0, len(cfg.GeminiKey)+len(cfg.ClaudeKey)+len(cfg.BedrockKey)+len(cfg.CodexKey)+len(cfg.OpenCodeGoKey)+len(cfg.ClineKey)+len(cfg.OllamaCloudKey)+len(cfg.VertexCompatAPIKey)+len(cfg.OpenAICompatibility))
+	refs := make([]ChannelRef, 0, len(cfg.GeminiKey)+len(cfg.ClaudeKey)+len(cfg.BedrockKey)+len(cfg.CodexKey)+len(cfg.OpenCodeGoKey)+len(cfg.ClineKey)+len(cfg.OllamaCloudKey)+len(cfg.CommandCodeKey)+len(cfg.VertexCompatAPIKey)+len(cfg.OpenAICompatibility))
 	addKey := func(id string) {
 		if id = strings.TrimSpace(id); id != "" {
 			refs = append(refs, ChannelRef{ChannelType: ChannelTypeProviderKey, ChannelID: id})
@@ -120,6 +120,9 @@ func ProviderChannelRefs(cfg *config.Config) []ChannelRef {
 		addKey(entry.ID)
 	}
 	for _, entry := range cfg.OllamaCloudKey {
+		addKey(entry.ID)
+	}
+	for _, entry := range cfg.CommandCodeKey {
 		addKey(entry.ID)
 	}
 	for _, entry := range cfg.VertexCompatAPIKey {
@@ -214,6 +217,9 @@ func buildChannels(cfg *config.Config, auths []*coreauth.Auth, bindings map[stri
 		}
 		for _, entry := range cfg.OllamaCloudKey {
 			add(simpleProviderChannel(entry.ID, entry.Name, "ollama-cloud", entry.Disabled))
+		}
+		for _, entry := range cfg.CommandCodeKey {
+			add(simpleProviderChannel(entry.ID, entry.Name, "commandcode", entry.Disabled))
 		}
 		for _, entry := range cfg.VertexCompatAPIKey {
 			add(simpleProviderChannel(entry.ID, "vertex", "vertex", false))

@@ -64,6 +64,12 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	if xaiIsMediaAlt(opts.Alt) {
 		return e.executeImageGeneration(ctx, auth, req, opts)
 	}
+	if xaiIsVideoAlt(opts.Alt) {
+		if strings.TrimSpace(opts.Alt) == xaiVideoStatusAlt {
+			return e.executeVideoStatus(ctx, auth, req, opts)
+		}
+		return e.executeVideoGeneration(ctx, auth, req, opts)
+	}
 	if opts.Alt == "responses/compact" {
 		return resp, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
 	}
@@ -157,6 +163,18 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
 	if xaiIsMediaAlt(opts.Alt) {
 		return e.executeImageGenerationStream(ctx, auth, req, opts)
+	}
+	if xaiIsVideoAlt(opts.Alt) {
+		// The video endpoints have no streaming form; a single terminal chunk keeps
+		// callers that reach this through a shared handler from having to know.
+		resp, videoErr := e.Execute(ctx, auth, req, opts)
+		if videoErr != nil {
+			return nil, videoErr
+		}
+		chunks := make(chan cliproxyexecutor.StreamChunk, 1)
+		chunks <- cliproxyexecutor.StreamChunk{Payload: resp.Payload}
+		close(chunks)
+		return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
 	}
 	if opts.Alt == "responses/compact" {
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}

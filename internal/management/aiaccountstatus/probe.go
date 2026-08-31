@@ -86,16 +86,30 @@ func doAuthGET(ctx context.Context, svc *managementapitools.Service, auth *corea
 }
 
 func doAuthPOST(ctx context.Context, svc *managementapitools.Service, auth *coreauth.Auth, url string, headers map[string]string, body string) ([]byte, error) {
-	return doAuthRequest(ctx, svc, auth, http.MethodPost, url, headers, body, nil)
+	raw, _, err := doAuthPOSTStatus(ctx, svc, auth, url, headers, body)
+	return raw, err
+}
+
+// doAuthPOSTStatus is doAuthPOST plus the upstream status code. Probes that must
+// branch on the status — antigravity retries a 403 without the project field
+// before believing the account is actually forbidden — cannot recover it from the
+// error string.
+func doAuthPOSTStatus(ctx context.Context, svc *managementapitools.Service, auth *coreauth.Auth, url string, headers map[string]string, body string) ([]byte, int, error) {
+	return doAuthRequestStatus(ctx, svc, auth, http.MethodPost, url, headers, body, nil)
 }
 
 func doAuthRequest(ctx context.Context, svc *managementapitools.Service, auth *coreauth.Auth, method, urlStr string, headers map[string]string, body string, mutate func(*http.Request)) ([]byte, error) {
+	raw, _, err := doAuthRequestStatus(ctx, svc, auth, method, urlStr, headers, body, mutate)
+	return raw, err
+}
+
+func doAuthRequestStatus(ctx context.Context, svc *managementapitools.Service, auth *coreauth.Auth, method, urlStr string, headers map[string]string, body string, mutate func(*http.Request)) ([]byte, int, error) {
 	if svc == nil {
-		return nil, fmt.Errorf("api tools unavailable")
+		return nil, 0, fmt.Errorf("api tools unavailable")
 	}
 	token, err := svc.ResolveTokenForAuth(ctx, auth)
 	if err != nil || strings.TrimSpace(token) == "" {
-		return nil, fmt.Errorf("token unavailable")
+		return nil, 0, fmt.Errorf("token unavailable")
 	}
 	var reader io.Reader
 	if body != "" {
@@ -103,7 +117,7 @@ func doAuthRequest(ctx context.Context, svc *managementapitools.Service, auth *c
 	}
 	req, err := http.NewRequestWithContext(ctx, method, urlStr, reader)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	for k, v := range headers {
@@ -122,17 +136,17 @@ func doAuthRequest(ctx context.Context, svc *managementapitools.Service, auth *c
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, err
+		return nil, resp.StatusCode, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("upstream http %d", resp.StatusCode)
+		return nil, resp.StatusCode, fmt.Errorf("upstream http %d", resp.StatusCode)
 	}
-	return raw, nil
+	return raw, resp.StatusCode, nil
 }
 
 func authString(auth *coreauth.Auth, keys ...string) string {

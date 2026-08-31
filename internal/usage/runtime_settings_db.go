@@ -23,6 +23,7 @@ const (
 	RuntimeSettingOpenCodeGoKeys       = runtimeconfig.RuntimeSettingOpenCodeGoKeys
 	RuntimeSettingClineKeys            = runtimeconfig.RuntimeSettingClineKeys
 	RuntimeSettingOllamaCloudKeys      = runtimeconfig.RuntimeSettingOllamaCloudKeys
+	RuntimeSettingCommandCodeKeys      = runtimeconfig.RuntimeSettingCommandCodeKeys
 	RuntimeSettingOpenAICompatibility  = runtimeconfig.RuntimeSettingOpenAICompatibility
 	RuntimeSettingVertexCompatKeys     = runtimeconfig.RuntimeSettingVertexCompatKeys
 	RuntimeSettingClaudeHeaderDefaults = runtimeconfig.RuntimeSettingClaudeHeaderDefaults
@@ -140,6 +141,7 @@ func persistProviderStableIDBackfill(store sqlsettings.RuntimeSettingsStore, cfg
 		{RuntimeSettingOpenCodeGoKeys, cfg.OpenCodeGoKey},
 		{RuntimeSettingClineKeys, cfg.ClineKey},
 		{RuntimeSettingOllamaCloudKeys, cfg.OllamaCloudKey},
+		{RuntimeSettingCommandCodeKeys, cfg.CommandCodeKey},
 		{RuntimeSettingOpenAICompatibility, cfg.OpenAICompatibility},
 		{RuntimeSettingVertexCompatKeys, cfg.VertexCompatAPIKey},
 	}
@@ -172,6 +174,7 @@ func BuildTenantRuntimeConfig(base *config.Config, tenantID string) config.Confi
 	tenantCfg.OpenCodeGoKey = nil
 	tenantCfg.ClineKey = nil
 	tenantCfg.OllamaCloudKey = nil
+	tenantCfg.CommandCodeKey = nil
 	tenantCfg.OpenAICompatibility = nil
 	tenantCfg.VertexCompatAPIKey = nil
 	tenantCfg.ClaudeHeaderDefaults = config.ClaudeHeaderDefaults{}

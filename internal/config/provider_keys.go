@@ -403,3 +403,62 @@ type OllamaCloudModel struct {
 
 func (m OllamaCloudModel) GetName() string  { return m.Name }
 func (m OllamaCloudModel) GetAlias() string { return m.Alias }
+
+// DefaultCommandCodeBaseURL is Command Code's documented Provider API. Note that
+// the plan tier is an entitlement rather than a credential concern: accounts on
+// the $1 "Go" plan mint a valid key but still receive 403 upgrade_required here,
+// because that plan excludes API access. Every other plan (GOAT and above) works.
+const DefaultCommandCodeBaseURL = "https://api.commandcode.ai/provider/v1"
+
+// CommandCodeKey represents a Command Code OpenAI-compatible API key.
+type CommandCodeKey struct {
+	// ID is the immutable persistent UUID used by channel bindings.
+	ID string `yaml:"id,omitempty" json:"id,omitempty"`
+
+	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Name is a human-readable label for this channel.
+	Name string `yaml:"name,omitempty" json:"name,omitempty"`
+
+	// Disabled prevents this credential from serving requests without changing its model allowlist.
+	Disabled bool `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+
+	// Priority controls selection preference when multiple credentials match.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
+	// Prefix optionally namespaces models for this credential.
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// BaseURL is the OpenAI-compatible base URL. Defaults to DefaultCommandCodeBaseURL.
+	BaseURL string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+
+	// ProxyURL overrides the global proxy setting for this API key if provided.
+	ProxyURL string `yaml:"proxy-url,omitempty" json:"proxy-url,omitempty"`
+
+	// ProxyID references a reusable proxy-pool entry. When valid, it takes precedence over ProxyURL.
+	ProxyID string `yaml:"proxy-id,omitempty" json:"proxy-id,omitempty"`
+
+	// Models defines upstream Command Code model IDs and optional client-facing aliases.
+	Models []CommandCodeModel `yaml:"models,omitempty" json:"models,omitempty"`
+
+	// Headers optionally adds extra HTTP headers for requests sent with this key.
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
+
+	// ExcludedModels lists model IDs that should be excluded for this provider.
+	ExcludedModels []string `yaml:"excluded-models,omitempty" json:"excluded-models,omitempty"`
+
+	// VisionFallbackModel is used for image requests whose requested model lacks vision support.
+	VisionFallbackModel string `yaml:"vision-fallback-model,omitempty" json:"vision-fallback-model,omitempty"`
+}
+
+func (k CommandCodeKey) GetAPIKey() string  { return k.APIKey }
+func (k CommandCodeKey) GetBaseURL() string { return k.BaseURL }
+
+// CommandCodeModel describes a model explicitly enabled for Command Code routing.
+type CommandCodeModel struct {
+	Name  string `yaml:"name" json:"name"`
+	Alias string `yaml:"alias,omitempty" json:"alias,omitempty"`
+}
+
+func (m CommandCodeModel) GetName() string  { return m.Name }
+func (m CommandCodeModel) GetAlias() string { return m.Alias }

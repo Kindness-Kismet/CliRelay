@@ -11,12 +11,82 @@ import (
 
 func TestRuntimeMigrationsCoverCoreTables(t *testing.T) {
 	migrations := RuntimeMigrations()
-	if len(migrations) != 24 {
-		t.Fatalf("RuntimeMigrations len = %d, want 24", len(migrations))
+	if len(migrations) != 29 {
+		t.Fatalf("RuntimeMigrations len = %d, want 29", len(migrations))
 	}
-	// Latest: request-log thinking level metadata.
+	// Appended from laterRuntimeMigrations() because migrations.go sits at its
+	// structure-gate size ceiling.
+	if migrations[27].Version != "202608100001_ip_access_control" {
+		t.Fatalf("ip access migration version = %q", migrations[27].Version)
+	}
+	// Latest: clears model/channel scopes stranded on end users whose permission
+	// profile was unbound without them.
+	if migrations[28].Version != "202608270001_end_user_unbound_profile_scope_cleanup" {
+		t.Fatalf("latest migration version = %q", migrations[28].Version)
+	}
+	for _, fragment := range []string{
+		"UPDATE end_users",
+		"allowed_channel_groups = '[]'",
+		"COALESCE(TRIM(permission_profile_id), '') = ''",
+	} {
+		if !strings.Contains(migrations[28].SQL, fragment) {
+			t.Fatalf("scope cleanup migration missing %q", fragment)
+		}
+	}
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS ip_access_rules",
+		"CREATE TABLE IF NOT EXISTS auth_attempt_events",
+		"ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ip_address",
+	} {
+		if !strings.Contains(migrations[27].SQL, fragment) {
+			t.Fatalf("ip access migration missing %q", fragment)
+		}
+	}
+	if migrations[26].Version != "202608080001_audit_log_read_noise_cleanup" {
+		t.Fatalf("audit cleanup migration version = %q", migrations[26].Version)
+	}
+	for _, fragment := range []string{
+		"DELETE FROM audit_logs",
+		"result <> 'denied'",
+		"idx_audit_logs_created_at",
+	} {
+		if !strings.Contains(migrations[26].SQL, fragment) {
+			t.Fatalf("audit log cleanup migration missing %q", fragment)
+		}
+	}
+	// Quota observation time, so a failing probe stops making stale quota look
+	// freshly checked.
+	if migrations[25].Version != "202608070001_ai_account_quota_observed_at" {
+		t.Fatalf("quota observed_at migration version = %q", migrations[25].Version)
+	}
+	for _, fragment := range []string{
+		"ADD COLUMN IF NOT EXISTS quota_observed_at TIMESTAMPTZ",
+		"FROM ai_account_subject_quota_points p",
+	} {
+		if !strings.Contains(migrations[25].SQL, fragment) {
+			t.Fatalf("quota observed_at migration missing %q", fragment)
+		}
+	}
+	if migrations[24].Version != "202608060001_auth_session_hardening" {
+		t.Fatalf("auth session migration version = %q", migrations[24].Version)
+	}
+	authSessionSQL := migrations[24].SQL
+	for _, fragment := range []string{
+		"CREATE TABLE IF NOT EXISTS user_session_tokens",
+		"last_failed_login_at TIMESTAMPTZ",
+		"remember_me BOOLEAN NOT NULL DEFAULT false",
+		"refresh_absolute_expires_at TIMESTAMPTZ",
+		// Mirroring live tokens into the new table is what keeps signed-in users
+		// from being logged out by the deploy itself.
+		"INSERT INTO user_session_tokens",
+	} {
+		if !strings.Contains(authSessionSQL, fragment) {
+			t.Fatalf("auth session hardening migration missing %q", fragment)
+		}
+	}
+	// Prior: request-log thinking level metadata.
 	if migrations[23].Version != "202608030001_request_log_thinking_level" {
-		t.Fatalf("latest migration version = %q", migrations[23].Version)
+		t.Fatalf("thinking level migration version = %q", migrations[23].Version)
 	}
 	thinkingSQL := migrations[23].SQL
 	for _, fragment := range []string{"ALTER TABLE request_logs", "thinking_level TEXT NOT NULL DEFAULT ''"} {

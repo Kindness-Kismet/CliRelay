@@ -67,7 +67,20 @@ func opencodeGoSessionID(opts cliproxyexecutor.Options, auth *cliproxyauth.Auth)
 		}
 	}
 	if raw, ok := opts.Metadata[cliproxyexecutor.ExecutionSessionMetadataKey]; ok {
-		if s, ok := raw.(string); ok {
+		if s, ok := raw.(string); ok && strings.TrimSpace(s) != "" {
+			return strings.TrimSpace(s)
+		}
+	}
+	// ExecutionSessionMetadataKey is only set on the websocket path, so ordinary
+	// HTTP turns from clients that send a client-specific session header (DeepSeek
+	// Harness: X-Deepseek-Harness-Session-Id, Grok: X-Grok-Session-Id) would reach
+	// the auth-ID fallback below. That collapses every concurrent session of one
+	// API key onto a single cache slot (reasoningCacheMaxEntriesPerKey == 1), so
+	// turns overwrite each other and get injected with another session's
+	// reasoning_content — which changes the request prefix and destroys the
+	// upstream prefix cache. The sticky key already carries exactly this identity.
+	if raw, ok := opts.Metadata[cliproxyexecutor.SessionStickyMetadataKey]; ok {
+		if s, ok := raw.(string); ok && strings.TrimSpace(s) != "" {
 			return strings.TrimSpace(s)
 		}
 	}

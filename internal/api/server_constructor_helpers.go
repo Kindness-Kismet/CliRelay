@@ -48,6 +48,7 @@ func newServerEngine(cfg *config.Config, optionState *serverOptionConfig) *gin.E
 	}
 	if cfg != nil {
 		configureTrustedProxies(engine, cfg.TrustedProxies)
+		warnOnUntrustedProxyDeployment(cfg)
 	}
 	if optionState != nil && optionState.engineConfigurator != nil {
 		optionState.engineConfigurator(engine)
@@ -55,6 +56,9 @@ func newServerEngine(cfg *config.Config, optionState *serverOptionConfig) *gin.E
 
 	engine.Use(logging.GinLogrusLogger())
 	engine.Use(logging.GinLogrusRecovery())
+	// Admission runs before any body handling: a denied source must not be able
+	// to make the process decompress or buffer what it sent.
+	engine.Use(ipAccessMiddleware())
 	engine.Use(middleware.DecompressRequestMiddleware())
 	engine.Use(middleware.RequestBodyCleanupMiddleware())
 	if optionState != nil {
@@ -214,6 +218,9 @@ func (s *Server) configureManagementHandler(
 	if optionState != nil && optionState.modelConfigMutatedCallback != nil {
 		s.mgmt.SetModelConfigMutatedHook(optionState.modelConfigMutatedCallback)
 	}
+	// Quota snapshots have to keep advancing for accounts nobody is watching;
+	// see config.AccountStatusRefreshConfig.
+	s.mgmt.StartAccountStatusScheduler()
 }
 
 func (s *Server) registerBuiltinModules(cfg *config.Config, accessManager *sdkaccess.Manager) {

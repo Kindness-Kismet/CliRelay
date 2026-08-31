@@ -17,6 +17,7 @@ const (
 	RuntimeSettingOpenCodeGoKeys       = runtimeconfig.RuntimeSettingOpenCodeGoKeys
 	RuntimeSettingClineKeys            = runtimeconfig.RuntimeSettingClineKeys
 	RuntimeSettingOllamaCloudKeys      = runtimeconfig.RuntimeSettingOllamaCloudKeys
+	RuntimeSettingCommandCodeKeys      = runtimeconfig.RuntimeSettingCommandCodeKeys
 	RuntimeSettingOpenAICompatibility  = runtimeconfig.RuntimeSettingOpenAICompatibility
 	RuntimeSettingVertexCompatKeys     = runtimeconfig.RuntimeSettingVertexCompatKeys
 	RuntimeSettingClaudeHeaderDefaults = runtimeconfig.RuntimeSettingClaudeHeaderDefaults

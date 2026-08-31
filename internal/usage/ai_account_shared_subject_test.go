@@ -101,7 +101,11 @@ func sharedSubjectTestAuth(tenantID, authID, accountID, email string) *coreauth.
 	}
 }
 
-func TestResolveAuthSubjectIdentitySharesOnlyStableAccountID(t *testing.T) {
+// A subject is the physical upstream account. Every seed that names that account
+// — the provider's id, the account email, the credential's own id — must resolve
+// to one subject however many tenants mounted it; only auth_index, which names
+// no account, stays tenant local.
+func TestResolveAuthSubjectIdentitySharesEverySeedThatNamesAnAccount(t *testing.T) {
 	authA := sharedSubjectTestAuth(sharedSubjectTenantA, "auth-a", "acct-shared", "a@example.com")
 	authB := sharedSubjectTestAuth(sharedSubjectTenantB, "auth-b", "acct-shared", "b@example.com")
 	identityA := ResolveAuthSubjectIdentity(authA)
@@ -120,18 +124,62 @@ func TestResolveAuthSubjectIdentitySharesOnlyStableAccountID(t *testing.T) {
 		t.Fatal("account_key/auth_subject_id must be non-empty")
 	}
 
-	fallbackA := ResolveAuthSubjectIdentity(sharedSubjectTestAuth(sharedSubjectTenantA, "fallback-a", "", "same@example.com"))
-	fallbackB := ResolveAuthSubjectIdentity(sharedSubjectTestAuth(sharedSubjectTenantB, "fallback-b", "", "same@example.com"))
-	if fallbackA == nil || fallbackB == nil {
-		t.Fatal("expected fallback identities")
+	// One Google account mounted by two tenants: production split it in three and
+	// each tenant saw only the calls it had made, beside the whole account's quota.
+	emailA := ResolveAuthSubjectIdentity(sharedSubjectTestAuth(sharedSubjectTenantA, "email-a", "", "same@example.com"))
+	emailB := ResolveAuthSubjectIdentity(sharedSubjectTestAuth(sharedSubjectTenantB, "email-b", "", "same@example.com"))
+	if emailA == nil || emailB == nil {
+		t.Fatal("expected email identities")
 	}
-	if fallbackA.ID == fallbackB.ID {
-		t.Fatalf("email fallback crossed tenant boundary: %q", fallbackA.ID)
+	if emailA.ID != emailB.ID {
+		t.Fatalf("one account email split across tenants: %q != %q", emailA.ID, emailB.ID)
 	}
-	for _, identity := range []*AuthSubjectIdentity{fallbackA, fallbackB} {
-		if identity.SubjectScope != AIAccountSubjectScopeTenant || identity.ShareEligible || identity.SeedKind != "email" {
-			t.Fatalf("tenant fallback contract = %+v", identity)
+	for _, identity := range []*AuthSubjectIdentity{emailA, emailB} {
+		if identity.SubjectScope != AIAccountSubjectScopeShared || !identity.ShareEligible || identity.SeedKind != "email" {
+			t.Fatalf("email identity contract = %+v", identity)
 		}
+	}
+
+	// The same API key mounted by two tenants. Its id is stored tenant-prefixed,
+	// and the prefix is the only part that is not derived from the key material.
+	keyA := ResolveAuthSubjectIdentity(&coreauth.Auth{
+		ID: sharedSubjectTenantA + "/codex:apikey:deadbeef", TenantID: sharedSubjectTenantA,
+		Provider: "codex", FileName: "codex-a.json",
+	})
+	keyB := ResolveAuthSubjectIdentity(&coreauth.Auth{
+		ID: sharedSubjectTenantB + "/codex:apikey:deadbeef", TenantID: sharedSubjectTenantB,
+		Provider: "codex", FileName: "codex-b.json",
+	})
+	if keyA == nil || keyB == nil {
+		t.Fatal("expected auth_id identities")
+	}
+	if keyA.ID != keyB.ID {
+		t.Fatalf("one API key split across tenants: %q != %q", keyA.ID, keyB.ID)
+	}
+	if keyA.SeedKind != "auth_id" || !keyA.ShareEligible {
+		t.Fatalf("auth_id identity contract = %+v", keyA)
+	}
+	// A different key must stay a different account.
+	other := ResolveAuthSubjectIdentity(&coreauth.Auth{
+		ID: sharedSubjectTenantA + "/codex:apikey:feedface", TenantID: sharedSubjectTenantA,
+		Provider: "codex", FileName: "codex-other.json",
+	})
+	if other == nil || other.ID == keyA.ID {
+		t.Fatalf("distinct API keys collapsed onto one subject: %+v", other)
+	}
+
+	// auth_index identifies nothing about the account, so it cannot claim two
+	// tenants hold the same one.
+	indexA := ResolveAuthSubjectIdentity(&coreauth.Auth{TenantID: sharedSubjectTenantA, Provider: "codex", FileName: "shared-name.json"})
+	indexB := ResolveAuthSubjectIdentity(&coreauth.Auth{TenantID: sharedSubjectTenantB, Provider: "codex", FileName: "shared-name.json"})
+	if indexA == nil || indexB == nil {
+		t.Fatal("expected auth_index identities")
+	}
+	if indexA.SeedKind != "auth_index" || indexA.ShareEligible || indexA.SubjectScope != AIAccountSubjectScopeTenant {
+		t.Fatalf("auth_index identity contract = %+v", indexA)
+	}
+	if indexA.ID == indexB.ID {
+		t.Fatalf("auth_index crossed the tenant boundary: %q", indexA.ID)
 	}
 }
 
@@ -266,7 +314,7 @@ func TestRequestProjectionSharesUsageWithoutTouchingBindingAndSurvivesLogCleanup
 		t.Fatalf("direct day summary id=%s 7d=%d 30d=%d start7=%s start30=%s", directID, direct7, direct30, start7, start30)
 	}
 
-	cycleStarts, err := QueryLatestAIAccountSubjectWeeklyCyclesBatch([]string{identity.ID}, []string{"code_week"})
+	cycleStarts, err := QueryLatestAIAccountSubjectWeeklyCyclesBatch([]string{identity.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +421,10 @@ func TestSharedSubjectBackfillUsesOnlySmallTablesAndIsIdempotent(t *testing.T) {
 		}
 	}
 	resetOld := now.Add(24 * time.Hour)
-	resetNew := now.Add(48 * time.Hour)
+	// The later probe must describe the period that follows the stored one, not a
+	// stored period whose reset simply drifted later: only a rollover replaces an
+	// anchor, so an arbitrary later reset would (correctly) be kept out.
+	resetNew := resetOld.Add(7 * 24 * time.Hour)
 	if err := RecordQuotaSnapshotPointsIdentityForTenant(sharedSubjectTenantA, authA.EnsureIndex(), identity.ID, "codex", []QuotaSnapshotPoint{{
 		RecordedAt: older, QuotaKey: "code_week", QuotaLabel: "Week", Percent: &pctOld, ResetAt: &resetOld, WindowSeconds: 604800,
 	}}); err != nil {
@@ -419,7 +470,7 @@ func TestSharedSubjectBackfillUsesOnlySmallTablesAndIsIdempotent(t *testing.T) {
 	if !ok || !parsedReset.Equal(resetNew) {
 		t.Fatalf("cycle reset=%q want %s", cycleReset, resetNew)
 	}
-	cycleStarts, err := QueryLatestAIAccountSubjectWeeklyCyclesBatch([]string{identity.ID}, []string{"code_week"})
+	cycleStarts, err := QueryLatestAIAccountSubjectWeeklyCyclesBatch([]string{identity.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,8 +716,13 @@ func TestFingerprintPolicyUsesSharedSubjectKeyAndTenantFallbackIsolation(t *test
 		t.Fatalf("invalidation count=%d key=%q", invalidations, invalidatedKey)
 	}
 
-	fallbackA := ResolveAuthSubjectIdentity(sharedSubjectTestAuth(sharedSubjectTenantA, "fp-email-a", "", "same@example.com"))
-	fallbackB := ResolveAuthSubjectIdentity(sharedSubjectTestAuth(sharedSubjectTenantB, "fp-email-b", "", "same@example.com"))
+	// auth_index is the only seed left that stays tenant local, so it is what has
+	// to keep two tenants' fingerprint policies apart.
+	fallbackA := ResolveAuthSubjectIdentity(&coreauth.Auth{TenantID: sharedSubjectTenantA, Provider: "codex", FileName: "fp-fallback.json"})
+	fallbackB := ResolveAuthSubjectIdentity(&coreauth.Auth{TenantID: sharedSubjectTenantB, Provider: "codex", FileName: "fp-fallback.json"})
+	if fallbackA == nil || fallbackB == nil || fallbackA.SeedKind != "auth_index" {
+		t.Fatalf("expected auth_index fallbacks: A=%+v B=%+v", fallbackA, fallbackB)
+	}
 	if fallbackA.ID == fallbackB.ID {
 		t.Fatal("tenant-scoped fingerprint fallback merged across tenants")
 	}

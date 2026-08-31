@@ -63,6 +63,14 @@ func ListOAuthProviderModelConfigRows() []OAuthProviderModelConfigRow {
 	return internalserviceapp.ListOAuthProviderModelConfigRows()
 }
 
+func ListOAuthProviderModelConfigRowsForTenant(tenantID string) []OAuthProviderModelConfigRow {
+	return internalserviceapp.ListOAuthProviderModelConfigRowsForTenant(tenantID)
+}
+
+func ListModelOwnersForAuthGroupsForTenant(tenantID string, authGroups []string) []string {
+	return internalserviceapp.ListModelOwnersForAuthGroupsForTenant(tenantID, authGroups)
+}
+
 func ConfigureServiceAccess(cfg *config.Config, accessManager *sdkaccess.Manager) {
 	internalserviceapp.ConfigureServiceAccess(cfg, accessManager)
 }
@@ -109,6 +117,10 @@ func FetchClaudeModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Con
 
 func FetchCodexModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
 	return internalserviceapp.FetchCodexModels(ctx, auth, cfg)
+}
+
+func FetchKimiModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+	return internalserviceapp.FetchKimiModels(ctx, auth, cfg)
 }
 
 func RegisterExecutorForAuth(coreManager *coreauth.Manager, cfg *config.Config, auth *coreauth.Auth, forceReplace bool, gateway WebsocketGateway) {

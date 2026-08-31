@@ -31,7 +31,7 @@ func TestUsageReporterPublishesTrustedTenantSeparatelyFromAPIKeyLabel(t *testing
 
 	ctx := context.WithValue(context.Background(), util.ContextKeyTrustedTenantID, tenantID)
 	ctx = context.WithValue(ctx, util.ContextKeyAPIKey, systemAPIKey)
-	reporter := newUsageReporter(ctx, "codex", model, "", nil)
+	reporter := newUsageReporter(ctx, "codex", model, "", nil, false)
 	reporter.setThinkingLevel("high")
 	reporter.ensurePublished(ctx)
 

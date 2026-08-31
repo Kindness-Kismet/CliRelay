@@ -16,6 +16,7 @@ const (
 	RuntimeSettingOpenCodeGoKeys       = "opencode-go-api-key"
 	RuntimeSettingClineKeys            = "cline-api-key"
 	RuntimeSettingOllamaCloudKeys      = "ollama-cloud-api-key"
+	RuntimeSettingCommandCodeKeys      = "commandcode-api-key"
 	RuntimeSettingOpenAICompatibility  = "openai-compatibility"
 	RuntimeSettingVertexCompatKeys     = "vertex-api-key"
 	RuntimeSettingClaudeHeaderDefaults = "claude-header-defaults"
@@ -187,6 +188,28 @@ func Specs() []Spec {
 				holder := &config.Config{OllamaCloudKey: value}
 				holder.SanitizeOllamaCloudKeys()
 				cfg.OllamaCloudKey = holder.OllamaCloudKey
+				return true
+			},
+		},
+		{
+			Key: RuntimeSettingCommandCodeKeys,
+			Meaningful: func(cfg *config.Config) bool {
+				return len(cfg.CommandCodeKey) > 0
+			},
+			Value: func(cfg *config.Config) any {
+				holder := &config.Config{CommandCodeKey: append([]config.CommandCodeKey(nil), cfg.CommandCodeKey...)}
+				holder.SanitizeCommandCodeKeys()
+				return holder.CommandCodeKey
+			},
+			Apply: func(cfg *config.Config, raw json.RawMessage) bool {
+				var value []config.CommandCodeKey
+				if err := json.Unmarshal(raw, &value); err != nil {
+					log.Warnf("runtimeconfig: decode %s: %v", RuntimeSettingCommandCodeKeys, err)
+					return false
+				}
+				holder := &config.Config{CommandCodeKey: value}
+				holder.SanitizeCommandCodeKeys()
+				cfg.CommandCodeKey = holder.CommandCodeKey
 				return true
 			},
 		},
@@ -400,7 +423,11 @@ func codexIdentityFingerprintMeaningful(fp config.CodexIdentityFingerprintConfig
 		strings.TrimSpace(clean.Version) != "" ||
 		strings.TrimSpace(clean.Originator) != "" ||
 		strings.TrimSpace(clean.WebsocketBeta) != "" ||
-		strings.TrimSpace(clean.SessionMode) != ""
+		strings.TrimSpace(clean.SessionMode) != "" ||
+		strings.TrimSpace(clean.ConvergenceMode) != "" ||
+		strings.TrimSpace(clean.InstallationID) != "" ||
+		clean.TLSFingerprint.Enabled ||
+		strings.TrimSpace(clean.TLSFingerprint.Profile) != ""
 }
 
 func claudeIdentityFingerprintMeaningful(fp config.ClaudeIdentityFingerprintConfig) bool {
@@ -446,6 +473,7 @@ type identityFingerprintRuntimePayload struct {
 	Claude                config.ClaudeIdentityFingerprintConfig `json:"claude,omitempty"`
 	Gemini                config.GeminiIdentityFingerprintConfig `json:"gemini,omitempty"`
 	XAI                   config.XAIIdentityFingerprintConfig    `json:"xai,omitempty"`
+	Kimi                  config.KimiIdentityFingerprintConfig   `json:"kimi,omitempty"`
 }
 
 func IdentityFingerprintRuntimeSettingValue(value config.IdentityFingerprintConfig) any {
@@ -456,6 +484,7 @@ func IdentityFingerprintRuntimeSettingValue(value config.IdentityFingerprintConf
 		Claude:                normalized.Claude,
 		Gemini:                normalized.Gemini,
 		XAI:                   normalized.XAI,
+		Kimi:                  normalized.Kimi,
 	}
 }
 
@@ -469,6 +498,10 @@ func identityFingerprintRuntimeSettingConfig(raw json.RawMessage) (config.Identi
 		Claude: payload.Claude,
 		Gemini: payload.Gemini,
 		XAI:    payload.XAI,
+		// Payloads written before kimi joined carry no kimi block, so it stays a
+		// zero value and normalization enables it with the builtin template — which
+		// is byte-identical to what the executor hardcoded before.
+		Kimi: payload.Kimi,
 	}
 	if payload.RuntimeSettingVersion >= identityFingerprintRuntimeSettingVersion {
 		return config.NormalizeIdentityFingerprintConfig(value), nil

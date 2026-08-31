@@ -25,6 +25,7 @@ import (
 //   - opencode-go
 //   - cline
 //   - ollama-cloud
+//   - commandcode
 //   - antigravity (returns static overrides only)
 func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	key := strings.ToLower(strings.TrimSpace(channel))
@@ -57,6 +58,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetClineModels()
 	case "ollama-cloud":
 		return GetOllamaCloudModels()
+	case "commandcode":
+		return GetCommandCodeModels()
 	case "antigravity":
 		cfg := GetAntigravityModelConfig()
 		if len(cfg) == 0 {

@@ -22,11 +22,18 @@ func registerIdentityAuthRoutes(engine *gin.Engine, h *managementhandlers.Handle
 
 	portal := engine.Group("/v0/portal")
 	portal.Use(middlewares...)
-	portal.POST("/auth/login", h.PostPortalLogin)
-	portal.POST("/auth/refresh", h.PostPortalRefresh)
+	// Only the two credential-bearing portal routes are throttled, and per-route
+	// rather than on the group: the rest already require a portal session, so a
+	// shared bucket would let one client's failed logins rate-limit everyone
+	// else's key management. Attaching it here (not in the handler) keeps the
+	// route table unchanged.
+	portalAuthThrottle := h.PortalAuthThrottleMiddleware()
+	portal.POST("/auth/login", portalAuthThrottle, h.PostPortalLogin)
+	portal.POST("/auth/refresh", portalAuthThrottle, h.PostPortalRefresh)
 	portal.POST("/auth/logout", h.PostPortalLogout)
 	portal.GET("/auth/me", h.GetPortalMe)
 	portal.PUT("/auth/password", h.PutPortalPassword)
+	portal.GET("/auth/attempts", h.GetPortalAuthAttempts)
 	portal.GET("/api-keys", h.GetPortalAPIKeys)
 	portal.POST("/api-keys", h.PostPortalAPIKey)
 	portal.GET("/api-keys/:id/secret", h.GetPortalAPIKeySecret)
@@ -81,4 +88,15 @@ func registerManagementIdentityRoutes(group *gin.RouterGroup, h *managementhandl
 	group.DELETE("/audit-logs", h.ClearAuditLogs)
 	group.GET("/audit-logs/:id", h.GetAuditLog)
 	group.DELETE("/audit-logs/:id", h.DeleteAuditLog)
+	group.GET("/ip-access/rules", h.GetIPAccessRules)
+	group.POST("/ip-access/rules", h.PostIPAccessRule)
+	group.PATCH("/ip-access/rules/:id", h.PatchIPAccessRule)
+	group.DELETE("/ip-access/rules/:id", h.DeleteIPAccessRule)
+	group.GET("/ip-access/status", h.GetIPAccessStatus)
+	group.GET("/ip-access/policy", h.GetIPAccessPolicy)
+	group.PUT("/ip-access/policy", h.PutIPAccessPolicy)
+	group.PATCH("/ip-access/rules", h.PatchIPAccessRulesBulk)
+	group.GET("/auth-attempts", h.GetAuthAttempts)
+	group.GET("/auth-attempts/summary", h.GetAuthAttemptSummary)
+	group.GET("/auth-attempts/export", h.GetAuthAttemptsExport)
 }

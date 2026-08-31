@@ -89,6 +89,9 @@ func collectChannelDescriptors(cfg *config.Config, auths []*coreauth.Auth) []cha
 		for _, entry := range cfg.OllamaCloudKey {
 			push(entry.Name, entry.Prefix, "ollama-cloud", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, managementauthfiles.BuildTagPayloadFromValues("ollama-cloud", nil))
 		}
+		for _, entry := range cfg.CommandCodeKey {
+			push(entry.Name, entry.Prefix, "commandcode", providerExcludesAllModels(entry.ExcludedModels), channelDisabledAuthorityConfig, managementauthfiles.BuildTagPayloadFromValues("commandcode", nil))
+		}
 		for _, entry := range cfg.VertexCompatAPIKey {
 			push("", entry.Prefix, "vertex", false, channelDisabledAuthorityConfig, managementauthfiles.BuildTagPayloadFromValues("vertex", nil))
 		}

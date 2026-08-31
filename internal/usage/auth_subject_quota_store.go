@@ -464,6 +464,11 @@ func QueryLatestWeeklyQuotaCycleByAuthSubjectForTenant(tenantID, subjectID strin
 	if cycle.CycleStartAt.IsZero() || cycle.ResetAt.IsZero() || cycle.WindowSeconds <= 0 {
 		return nil, nil
 	}
+	// Roll an anchor whose period already ended, exactly as the shared reader and
+	// the projection do. Probes stop for disabled or unreachable accounts, and a
+	// frozen anchor would report the previous period's window as the live one.
+	cycle.CycleStartAt, cycle.ResetAt = advanceQuotaCyclePeriod(
+		cycle.CycleStartAt, cycle.ResetAt, cycle.WindowSeconds, time.Now())
 	return &cycle, nil
 }
 

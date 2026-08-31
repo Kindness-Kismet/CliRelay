@@ -32,6 +32,7 @@ func (s *Server) setupRoutes() {
 	claudeCodeHandlers := claude.NewClaudeCodeAPIHandler(s.handlers)
 	openaiResponsesHandlers := openai.NewOpenAIResponsesAPIHandler(s.handlers)
 	openaiImagesHandlers := openai.NewOpenAIImagesAPIHandler(s.handlers)
+	openaiVideosHandlers := openai.NewOpenAIVideosAPIHandler(s.handlers)
 
 	registerV1Routes := func(group *gin.RouterGroup) {
 		group.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
@@ -39,6 +40,8 @@ func (s *Server) setupRoutes() {
 		group.POST("/completions", openaiHandlers.Completions)
 		group.POST("/images/generations", openaiImagesHandlers.Generations)
 		group.POST("/images/edits", openaiImagesHandlers.Edits)
+		group.POST("/videos/generations", openaiVideosHandlers.Generations)
+		group.GET("/videos/:request_id", openaiVideosHandlers.Status)
 		group.POST("/messages", claudeCodeHandlers.ClaudeMessages)
 		group.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
 		group.GET("/responses", func(c *gin.Context) {
@@ -126,6 +129,7 @@ func (s *Server) setupRoutes() {
 				"POST /v1/chat/completions",
 				"POST /v1/completions",
 				"POST /v1/images/generations",
+				"POST /v1/videos/generations",
 				"GET /v1/models",
 			},
 		})

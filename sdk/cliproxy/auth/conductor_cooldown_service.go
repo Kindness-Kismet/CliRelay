@@ -268,6 +268,19 @@ func (s cooldownService) applyModelFailureLocked(auth *Auth, result Result, now 
 			effects.suspendReason = "not_found"
 			effects.shouldSuspendModel = true
 		case 429:
+			// A 429 is not automatically an exhausted quota. Google's CloudCode
+			// answers "Resource has been exhausted" for ordinary per-minute
+			// throttling, and treating that as quota exhaustion suspends the
+			// model on an account that still has its full allowance.
+			//
+			// Observed in production: an antigravity account reporting 100%
+			// remaining cycled suspend → resume → suspend within five seconds,
+			// repeatedly, because the first request after each recovery drew
+			// another throttling 429 and was again read as exhaustion.
+			if isTransientRateLimitError(result.Error) {
+				applyTransientRateLimitLocked(auth, state, result, now, effects)
+				break
+			}
 			applyModelQuotaFailureLocked(auth, state, result, now, effects)
 		case 408, 500, 502, 503, 504:
 			if quotaCooldownDisabledForAuth(auth) {
@@ -342,6 +355,69 @@ func isQuotaExhaustionError(err *Error, retryAfter *time.Duration) bool {
 	}
 	return isUsageBalanceExhaustedMessage(err.Message)
 }
+
+// isTransientRateLimitError reports whether a 429 describes short-term
+// throttling rather than an exhausted allowance.
+//
+// The distinction is in the body: providers name an exhausted quota explicitly
+// ("quota_exhausted", a quotaResetDelay, a daily quota), whereas a bare
+// "resource has been exhausted" is the generic throttle Google returns for
+// per-minute limits. Anything not recognised as throttling keeps the previous
+// behaviour and is treated as exhaustion, so this can only narrow the cases
+// that suspend a model, never widen them.
+func isTransientRateLimitError(err *Error) bool {
+	if err == nil {
+		return false
+	}
+	body := strings.ToLower(err.Message)
+	if body == "" {
+		return false
+	}
+	for _, explicit := range []string{
+		"quota_exhausted", "quotaresetdelay", "quota reset",
+		"quota limit", "daily quota", "usage balance exhausted", "balance exhausted",
+	} {
+		if strings.Contains(body, explicit) {
+			return false
+		}
+	}
+	return strings.Contains(body, "resource has been exhausted") ||
+		strings.Contains(body, "resource_exhausted") ||
+		strings.Contains(body, "rate limit") ||
+		strings.Contains(body, "too many requests")
+}
+
+// applyTransientRateLimitLocked backs off briefly without declaring the model
+// out of quota: no quota state, no suspension, so the next scheduling pass can
+// use the account again instead of parking it behind a quota cooldown.
+func applyTransientRateLimitLocked(auth *Auth, state *ModelState, result Result, now time.Time, effects *resultStateEffects) {
+	if state == nil {
+		return
+	}
+	cooldown := transientRateLimitCooldown
+	if result.RetryAfter != nil && *result.RetryAfter > 0 {
+		cooldown = *result.RetryAfter
+	}
+	if quotaCooldownDisabledForAuth(auth) {
+		cooldown = 0
+	}
+	if cooldown > 0 {
+		state.NextRetryAfter = now.Add(cooldown)
+	} else {
+		state.NextRetryAfter = time.Time{}
+	}
+	// Explicitly clear any quota flag a previous misclassification may have set,
+	// so one throttled request cannot leave the model parked indefinitely.
+	state.Quota = QuotaState{}
+	effects.clearModelQuota = true
+	auth.Status = StatusError
+	auth.UpdatedAt = now
+	updateAggregatedAvailability(auth, now)
+}
+
+// transientRateLimitCooldown matches the shortest window a provider realistically
+// throttles on; a per-minute limit clears within it.
+const transientRateLimitCooldown = time.Minute
 
 func isUsageBalanceExhaustedMessage(message string) bool {
 	lower := strings.ToLower(strings.TrimSpace(message))

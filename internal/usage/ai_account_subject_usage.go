@@ -11,6 +11,12 @@ import (
 const aiAccountSubjectDayRetention = 400 * 24 * time.Hour
 const aiAccountSubjectWeeklyWindowSeconds = int64(7 * 24 * time.Hour / time.Second)
 
+// WeeklyQuotaWindowSeconds is the width at which a quota window counts as the
+// weekly cycle. Readers outside this package need the same threshold to pick a
+// weekly window out of a quota list; exporting it keeps them from hard-coding a
+// second copy that can drift from the one the cycle projection uses.
+const WeeklyQuotaWindowSeconds = aiAccountSubjectWeeklyWindowSeconds
+
 // Keep every (subject, quota key) cycle so additional weekly windows cannot
 // replace the provider's primary card cycle.
 var sharedCycleCache = struct {
@@ -48,26 +54,171 @@ func primaryAIAccountSubjectWeeklyQuotaKey(provider string) string {
 		return "code_week"
 	case "xai", "grok":
 		return "weekly_limit"
+	case "antigravity":
+		// Antigravity reports two weekly buckets — Gemini models and the
+		// third-party (Claude/GPT) ones. Gemini is the bucket an account actually
+		// spends; the 3p bucket usually sits unused, and while it does the
+		// upstream answers its reset as "now + 7d", so its derived start walks
+		// forward on every probe and can never anchor a period.
+		return "antigravity:gemini_weekly"
 	default:
 		return ""
 	}
 }
 
+// PrimaryWeeklyQuotaKeys is the single source of truth for "which quota window
+// is this provider's card cycle". The card list and the detail trend must agree
+// on it: when they disagree they anchor their totals to different cycles and
+// report different numbers for the same account.
+func PrimaryWeeklyQuotaKeys(provider string) []string {
+	key := primaryAIAccountSubjectWeeklyQuotaKey(provider)
+	if key == "" {
+		return nil
+	}
+	return []string{key}
+}
+
+// xaiProductQuotaKeyPrefix marks a per-product xAI weekly window.
+const xaiProductQuotaKeyPrefix = "product:"
+
+// MatchesProjectionQuotaKey reports whether a weekly quota window may serve as
+// the divisor of the weekly-budget projection.
+//
+// The projection divides locally recorded cost by an upstream consumption
+// share, so the two sides have to describe the same requests. For most
+// providers the card cycle window is also the only window the proxy's traffic
+// feeds, and the primary key is the right divisor.
+//
+// xAI is the exception: SuperGrok bills every product — Grok Chat on the web
+// included — against one shared weekly pool, so weekly_limit counts consumption
+// this proxy never produced and using it understates the projected budget by
+// however much the account spent elsewhere. The xAI probe attaches the weekly
+// window only to products the proxy actually feeds (see parseXAIWeeklyBilling),
+// so a product window of weekly width is exactly the attributable share.
+//
+// Callers keep applying their own window-width filter; this only narrows which
+// keys within that width are eligible.
+func MatchesProjectionQuotaKey(provider, quotaKey string) bool {
+	quotaKey = strings.TrimSpace(quotaKey)
+	if quotaKey == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "xai", "grok":
+		return strings.HasPrefix(quotaKey, xaiProductQuotaKeyPrefix)
+	default:
+		return quotaKey == primaryAIAccountSubjectWeeklyQuotaKey(provider)
+	}
+}
+
+// ProjectionQuotaIsAttributable reports whether a provider's projection divisor
+// is narrower than its pool-wide weekly percentage.
+//
+// The panel shows both numbers — "weekly quota used" from the pool and the
+// projected budget from the attributable share — and without this flag the two
+// read as contradictory (19% consumed against a budget derived from 16%).
+func ProjectionQuotaIsAttributable(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "xai", "grok":
+		return true
+	default:
+		return false
+	}
+}
+
+// aiAccountSubjectCycleDriftTolerance bounds how far a re-probed cycle start may
+// move and still count as the same cycle.
+//
+// Upstreams report the window as a remaining-seconds countdown, so reset_at (and
+// with it cycle_start = reset_at - window) lands apart on every probe. Treating
+// those as distinct cycles is what split one weekly period into several usage
+// buckets, leaving each reader to see whichever fragment matched the timestamp it
+// happened to read.
+//
+// One percent of the window: production showed drift is not always seconds — a
+// single odd probe moved a weekly start by 20 minutes and stranded its own
+// fragment — while a genuine rollover moves the start by a full window, a hundred
+// times the tolerance. Anything in between does not occur.
+func aiAccountSubjectCycleDriftTolerance(windowSeconds int64) time.Duration {
+	if windowSeconds <= 0 {
+		return time.Minute
+	}
+	tolerance := time.Duration(windowSeconds) * time.Second / 100
+	if tolerance < time.Minute {
+		tolerance = time.Minute
+	}
+	if tolerance > 2*time.Hour {
+		tolerance = 2 * time.Hour
+	}
+	return tolerance
+}
+
+func absDuration(value time.Duration) time.Duration {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+// sameAIAccountSubjectCycle reports whether two cycle anchors describe one cycle.
+func sameAIAccountSubjectCycle(a, b time.Time, windowSeconds int64) bool {
+	if a.IsZero() || b.IsZero() {
+		return false
+	}
+	return absDuration(a.UTC().Sub(b.UTC())) <= aiAccountSubjectCycleDriftTolerance(windowSeconds)
+}
+
+// selectAIAccountSubjectWeeklyCycle answers "which window is this subject's card
+// cycle" and must answer it identically everywhere.
+//
+// The request-hot projection asks via an in-memory map and the readers ask via a
+// SQL result set, so the answer cannot depend on the order candidates arrive in.
+// It also cannot depend on last_verified_at or reset_at: a provider that reports
+// several weekly windows re-stamps them all on the same probe, and ordering by a
+// moving timestamp let the two sides pick different windows. Requests then landed
+// in a bucket no reader looked at — production had an account with 1084 lifetime
+// calls whose card reported 0 for the period.
 func selectAIAccountSubjectWeeklyCycle(cycles []AIAccountSubjectQuotaCycle) (AIAccountSubjectQuotaCycle, bool) {
-	var selected AIAccountSubjectQuotaCycle
+	candidates := make([]AIAccountSubjectQuotaCycle, 0, len(cycles))
+	preferred := make([]AIAccountSubjectQuotaCycle, 0, len(cycles))
 	for _, cycle := range cycles {
 		if cycle.WindowSeconds < aiAccountSubjectWeeklyWindowSeconds || cycle.CycleStartAt.IsZero() || cycle.ResetAt.IsZero() {
 			continue
 		}
+		candidates = append(candidates, cycle)
 		primaryKey := primaryAIAccountSubjectWeeklyQuotaKey(cycle.Provider)
-		if primaryKey != "" && strings.TrimSpace(cycle.QuotaKey) != primaryKey {
-			continue
+		if primaryKey != "" && strings.TrimSpace(cycle.QuotaKey) == primaryKey {
+			preferred = append(preferred, cycle)
 		}
-		if selected.AuthSubjectID == "" || cycle.LastVerifiedAt.After(selected.LastVerifiedAt) {
+	}
+	// The provider's named window wins when the probe returned it. When it did
+	// not — an upstream rename, or a fallback probe that only sees other windows
+	// — keep the remaining candidates instead of reporting no cycle at all.
+	if len(preferred) > 0 {
+		candidates = preferred
+	}
+	if len(candidates) == 0 {
+		return AIAccountSubjectQuotaCycle{}, false
+	}
+	selected := candidates[0]
+	for _, cycle := range candidates[1:] {
+		if aiAccountSubjectCycleRanksAhead(cycle, selected) {
 			selected = cycle
 		}
 	}
-	return selected, selected.AuthSubjectID != ""
+	return selected, true
+}
+
+// aiAccountSubjectCycleRanksAhead is a total order over cycle candidates, so the
+// winner is a pure function of the set. The narrowest window at or above a week
+// is the weekly one — a monthly window sorts behind it rather than displacing it
+// — and the quota key breaks the tie because, unlike any timestamp, it does not
+// move when the next probe lands.
+func aiAccountSubjectCycleRanksAhead(candidate, current AIAccountSubjectQuotaCycle) bool {
+	if candidate.WindowSeconds != current.WindowSeconds {
+		return candidate.WindowSeconds < current.WindowSeconds
+	}
+	return strings.TrimSpace(candidate.QuotaKey) < strings.TrimSpace(current.QuotaKey)
 }
 
 func cachedAIAccountSubjectWeeklyCycle(subjectID string) (AIAccountSubjectQuotaCycle, bool) {
@@ -130,13 +281,42 @@ func aiAccountSubjectCycleAt(tx *sql.Tx, subjectID string, at time.Time) (AIAcco
 	if !ok {
 		return AIAccountSubjectQuotaCycle{}, false, nil
 	}
-	at = at.UTC()
-	window := time.Duration(cycle.WindowSeconds) * time.Second
-	for !at.Before(cycle.ResetAt) {
-		cycle.CycleStartAt = cycle.ResetAt
-		cycle.ResetAt = cycle.ResetAt.Add(window)
+	cycle = advanceAIAccountSubjectCycleTo(cycle, at)
+	return cycle, !at.UTC().Before(cycle.CycleStartAt), nil
+}
+
+// advanceAIAccountSubjectCycleTo rolls a stored anchor forward to the period that
+// contains at.
+//
+// The stored anchor only moves when a probe lands, and probes stop whenever the
+// account is disabled, rate limited or simply unreachable. Every reader must
+// therefore apply the same elapsed-time roll the projection applies, or the two
+// sides disagree the moment a reset passes unprobed: the writer keys the bucket
+// to the period the request happened in while the card still reports the previous
+// period's start — and, matching buckets against that stale start, the previous
+// period's totals.
+func advanceAIAccountSubjectCycleTo(cycle AIAccountSubjectQuotaCycle, at time.Time) AIAccountSubjectQuotaCycle {
+	cycle.CycleStartAt, cycle.ResetAt = advanceQuotaCyclePeriod(cycle.CycleStartAt, cycle.ResetAt, cycle.WindowSeconds, at)
+	return cycle
+}
+
+// advanceQuotaCyclePeriod is the shared roll used by both cycle tables, so the
+// tenant-scoped reader cannot answer with a different period than the shared one.
+func advanceQuotaCyclePeriod(start, reset time.Time, windowSeconds int64, at time.Time) (time.Time, time.Time) {
+	if windowSeconds <= 0 || reset.IsZero() {
+		return start, reset
 	}
-	return cycle, !at.Before(cycle.CycleStartAt), nil
+	at = at.UTC()
+	reset = reset.UTC()
+	if at.Before(reset) {
+		return start, reset
+	}
+	// Jump to the containing period rather than stepping one window at a time: an
+	// anchor left behind by a long probe outage can be many windows old.
+	window := time.Duration(windowSeconds) * time.Second
+	skipped := at.Sub(reset) / window
+	start = reset.Add(skipped * window)
+	return start, start.Add(window)
 }
 
 func formatAIAccountSubjectCycleBucketStart(value time.Time) string {
@@ -364,40 +544,33 @@ func QueryAIAccountSubjectUsageSummaries(subjectIDs []string, cycleStartBySubjec
 	}
 
 	cycleIDs := make([]string, 0, len(cycleStartBySubject))
-	cycleStarts := make([]string, 0, len(cycleStartBySubject))
-	startSeen := make(map[string]struct{}, len(cycleStartBySubject))
 	for id, start := range cycleStartBySubject {
 		if _, ok := out[id]; !ok || start.IsZero() {
 			continue
 		}
-		startKey := formatAIAccountSubjectCycleBucketStart(start)
 		s := out[id]
 		s.CycleKnown = true
 		s.CycleStart = start.UTC().Format(time.RFC3339)
 		out[id] = s
 		cycleIDs = append(cycleIDs, id)
-		if _, ok := startSeen[startKey]; !ok {
-			startSeen[startKey] = struct{}{}
-			cycleStarts = append(cycleStarts, startKey)
-		}
 	}
 	if len(cycleIDs) == 0 {
 		return out, nil
 	}
 
-	cycleArgs := make([]any, 0, len(cycleIDs)+len(cycleStarts))
+	cycleArgs := make([]any, 0, len(cycleIDs))
 	for _, id := range cycleIDs {
 		cycleArgs = append(cycleArgs, id)
 	}
-	for _, start := range cycleStarts {
-		cycleArgs = append(cycleArgs, start)
-	}
+	// Match buckets by tolerance rather than by exact key. Buckets written before
+	// cycle anchoring landed are still keyed to jittered starts, and an exact
+	// match would report only the fragment that happens to carry the current
+	// timestamp — the same period read as 19 requests here and 436 there.
 	cycleRows, err := db.Query(`
 		SELECT auth_subject_id, bucket_start, request_count, cost_total, total_tokens, updated_at
 		FROM ai_account_subject_usage_buckets
 		WHERE bucket_kind = 'cycle'
 		  AND auth_subject_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(cycleIDs)), ",")+`)
-		  AND bucket_start IN (`+strings.TrimSuffix(strings.Repeat("?,", len(cycleStarts)), ",")+`)
 	`, cycleArgs...)
 	if err != nil {
 		return nil, err
@@ -412,11 +585,17 @@ func QueryAIAccountSubjectUsageSummaries(subjectIDs []string, cycleStartBySubjec
 			return nil, err
 		}
 		expected, ok := cycleStartBySubject[id]
-		if !ok || bucketStart != formatAIAccountSubjectCycleBucketStart(expected) {
+		if !ok {
+			continue
+		}
+		bucketAt, parsed := parseStoredTimeString(bucketStart)
+		if !parsed || !sameAIAccountSubjectCycle(bucketAt, expected, aiAccountSubjectWeeklyWindowSeconds) {
 			continue
 		}
 		s := out[id]
-		s.CycleRequestTotal, s.CycleCostTotal, s.CycleTotalTokens = req, cost, totalTokens
+		s.CycleRequestTotal += req
+		s.CycleCostTotal += cost
+		s.CycleTotalTokens += totalTokens
 		if t, ok := parseStoredTimeString(updated.String); ok && t.After(s.UpdatedAt) {
 			s.UpdatedAt = t
 		}

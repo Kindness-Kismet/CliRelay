@@ -14,7 +14,8 @@ import (
 // Priority:
 //  1. opts.Metadata[ExecutionSessionMetadataKey]
 //  2. Session-Id header
-//  3. Return (empty, false) — never fallback to auth.ID
+//  3. opts.Metadata[SessionStickyMetadataKey]
+//  4. Return (empty, false) — never fallback to auth.ID
 func ResolveSessionKey(opts cliproxyexecutor.Options, auth *cliproxyauth.Auth) (SessionKey, bool) {
 	// 1. Metadata first — most reliable when available
 	if raw, ok := opts.Metadata[cliproxyexecutor.ExecutionSessionMetadataKey]; ok {
@@ -30,6 +31,18 @@ func ResolveSessionKey(opts cliproxyexecutor.Options, auth *cliproxyauth.Auth) (
 		}
 	}
 
-	// 3. Never fallback to auth.ID for image memory — would leak across sessions
+	// 3. Sticky key — set only when the request carried a client-specific session
+	// header (DeepSeek Harness, Grok, Codex, …). ExecutionSessionMetadataKey is
+	// websocket-only, so without this those clients get no cross-turn image
+	// memory at all. Safe by construction: the sticky key is per conversation,
+	// not per API key, so it cannot leak images between sessions the way an
+	// auth.ID fallback would.
+	if raw, ok := opts.Metadata[cliproxyexecutor.SessionStickyMetadataKey]; ok {
+		if s, ok := raw.(string); ok && strings.TrimSpace(s) != "" {
+			return SessionKey(strings.TrimSpace(s)), true
+		}
+	}
+
+	// 4. Never fallback to auth.ID for image memory — would leak across sessions
 	return "", false
 }

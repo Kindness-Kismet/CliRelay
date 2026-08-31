@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	xaiauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/xai"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	managementapitools "github.com/router-for-me/CLIProxyAPI/v6/internal/management/apitools"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -477,6 +479,13 @@ func (s *Service) refreshOne(jobID, tenantID string, auth *coreauth.Auth, subjec
 		probe.SubscriptionSource = asserted.SubscriptionSource
 	}
 	if probeErr != nil {
+		// Probe outcomes were previously invisible in logs, so "the panel shows a
+		// week-old number" could not be traced to the upstream failure behind it.
+		log.WithFields(log.Fields{
+			"auth_subject_id": subjectID,
+			"provider":        auth.Provider,
+			"auth_index":      auth.Index,
+		}).WithError(probeErr).Warn("ai account status probe failed; stored quota is kept but not refreshed")
 		_ = usage.UpdateAIAccountSubjectProbeFailure(subjectID, auth.Provider, "probe_failed", probeErr.Error(), checked)
 		_ = usage.UpdateAIAccountRefreshFailure(
 			tenantID, subjectID, auth.Index, auth.Provider, string(auth.Status),
@@ -504,6 +513,16 @@ func (s *Service) refreshOne(jobID, tenantID string, auth *coreauth.Auth, subjec
 			r.UpdatedAt = checked
 		})
 		return
+	}
+	// A 200 that parses to zero windows means the upstream payload shape changed or
+	// the account genuinely has no quota. Either way the stored windows are carried
+	// forward unrefreshed, so surface it instead of silently serving aging values.
+	if len(probe.Quotas) == 0 {
+		log.WithFields(log.Fields{
+			"auth_subject_id": subjectID,
+			"provider":        auth.Provider,
+			"auth_index":      auth.Index,
+		}).Warn("ai account status probe returned no quota windows; stored quota is kept but not refreshed")
 	}
 	s.applyRuntimeQuotaProbe(ctx, auth, probe)
 
@@ -662,9 +681,14 @@ func (s *Service) applyRuntimeQuotaProbe(ctx context.Context, auth *coreauth.Aut
 		if quota.QuotaKey != "weekly_limit" || quota.Percent == nil {
 			continue
 		}
+		// Same threshold the runtime recovery probe uses: percentages now carry
+		// upstream precision, and a fraction of a percent left cannot serve a
+		// request. Calling that recovered puts the credential back in rotation to
+		// take another 402 and cool down again, over and over until the reset.
+		exhausted := xaiauth.WeeklyBilling{RemainingPercent: *quota.Percent}.Exhausted()
 		result := &coreauth.QuotaProbeResult{
-			Recovered:       *quota.Percent > 0,
-			WindowExhausted: *quota.Percent <= 0,
+			Recovered:       !exhausted,
+			WindowExhausted: exhausted,
 			Window:          "week",
 			WindowMinutes:   10080,
 		}
@@ -701,7 +725,7 @@ func (s *Service) loadPersistedStatus(subjectID string) (*usage.AIAccountSubject
 }
 
 func (s *Service) viewFromPersistedRecord(tenantID string, auth *coreauth.Auth, record usage.AIAccountSubjectStatusRecord) *AccountStatusView {
-	cycleStarts, _ := usage.QueryLatestAIAccountSubjectWeeklyCyclesBatch([]string{record.AuthSubjectID}, primaryWeeklyKeys(auth.Provider))
+	cycleStarts, _ := usage.QueryLatestAIAccountSubjectWeeklyCyclesBatch([]string{record.AuthSubjectID})
 	summaries, _ := usage.QueryAIAccountSubjectUsageSummaries([]string{record.AuthSubjectID}, cycleStarts)
 	subjects, _ := usage.ListAIAccountSubjects([]string{record.AuthSubjectID})
 	counts, _ := usage.CountAIAccountTenantBindings(tenantID, []string{record.AuthSubjectID})
@@ -823,17 +847,7 @@ func (s *Service) ListStatus(tenantID string, authIndexes, authSubjectIDs []stri
 	if err != nil {
 		return StatusListResponse{}, err
 	}
-	prefKeys := make([]string, 0)
-	prefSeen := map[string]struct{}{}
-	for _, auth := range wanted {
-		for _, key := range primaryWeeklyKeys(auth.Provider) {
-			if _, ok := prefSeen[key]; !ok {
-				prefSeen[key] = struct{}{}
-				prefKeys = append(prefKeys, key)
-			}
-		}
-	}
-	cycleStart, err := usage.QueryLatestAIAccountSubjectWeeklyCyclesBatch(subjectIDs, prefKeys)
+	cycleStart, err := usage.QueryLatestAIAccountSubjectWeeklyCyclesBatch(subjectIDs)
 	if err != nil {
 		return StatusListResponse{}, err
 	}
@@ -866,90 +880,6 @@ func (s *Service) ListStatus(tenantID string, authIndexes, authSubjectIDs []stri
 	return StatusListResponse{Items: items}, nil
 }
 
-func statusViewFromSharedRecord(row usage.AIAccountSubjectStatusRecord, auth *coreauth.Auth, summary usage.AuthSubjectUsageSummary, subject usage.AIAccountSubjectRecord, bindingCount int) AccountStatusView {
-	view := AccountStatusView{
-		AuthSubjectID: row.AuthSubjectID, Provider: row.Provider, StatusScope: usage.AIAccountStatusScopeShared,
-		SubjectScope: subject.SubjectScope, ShareEligible: subject.ShareEligible, SubjectSeedKind: subject.SeedKind,
-		CurrentTenantBindingCount: bindingCount, RefreshState: row.LastProbeState, HealthStatus: row.HealthStatus,
-		PlanType: row.PlanType, RestrictionSummary: row.RestrictionSummary, ErrorSummary: row.ErrorSummary,
-		ErrorCode: row.ErrorCode, Quotas: row.Quotas, ResetCreditCount: row.ResetCreditCount,
-		ResetCreditExpirations: row.ResetCreditExpirations, Usage: summary,
-		SubscriptionStartedAt: row.SubscriptionStartedAt, SubscriptionExpiresAt: row.SubscriptionExpiresAt,
-		SubscriptionSource: row.SubscriptionSource, UpstreamCheckedAt: row.UpstreamCheckedAt,
-		ExpiresAt: row.SubscriptionExpiresAt, Version: row.Version, UpdatedAt: timePointer(row.UpdatedAt),
-	}
-	if auth != nil {
-		view.AuthIndex = auth.Index
-		if view.Provider == "" {
-			view.Provider = auth.Provider
-		}
-		if view.HealthStatus == "" {
-			view.HealthStatus = string(auth.Status)
-		}
-	}
-	if view.Quotas == nil {
-		view.Quotas = []usage.QuotaWindowDTO{}
-	}
-	if view.Usage.AuthSubjectID == "" {
-		view.Usage.AuthSubjectID = row.AuthSubjectID
-	}
-	if !summary.UpdatedAt.IsZero() {
-		view.UsageUpdatedAt = timePointer(summary.UpdatedAt)
-	}
-	if view.Usage.WeeklyQuotaUsed == nil && auth != nil {
-		view.Usage.WeeklyQuotaUsed = weeklyUsedFromQuotas(row.Quotas, primaryWeeklyKeys(auth.Provider)...)
-	}
-	return view
-}
-
-func timePointer(value time.Time) *time.Time {
-	if value.IsZero() {
-		return nil
-	}
-	value = value.UTC()
-	return &value
-}
-
-func weeklyUsedFromQuotas(quotas []usage.QuotaWindowDTO, preferred ...string) *float64 {
-	pref := make(map[string]struct{}, len(preferred))
-	for _, k := range preferred {
-		pref[k] = struct{}{}
-	}
-	for i := range quotas {
-		q := &quotas[i]
-		if q.Percent == nil {
-			continue
-		}
-		if len(pref) > 0 {
-			if _, ok := pref[q.QuotaKey]; !ok {
-				continue
-			}
-		}
-		used := 100 - *q.Percent
-		if used < 0 {
-			used = 0
-		}
-		if used > 100 {
-			used = 100
-		}
-		return &used
-	}
-	return nil
-}
-
-func primaryWeeklyKeys(provider string) []string {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "anthropic", "claude":
-		return []string{"seven_day"}
-	case "codex", "kimi":
-		return []string{"code_week"}
-	case "xai", "grok":
-		return []string{"weekly_limit"}
-	default:
-		return nil
-	}
-}
-
 func (s *Service) listAuths(tenantID string) []*coreauth.Auth {
 	if s == nil || s.authManager == nil {
 		return nil
@@ -977,90 +907,4 @@ func (s *Service) purgeExpiredJobs() {
 			delete(s.inFlight, key)
 		}
 	}
-}
-
-func flightKey(_ string, subjectID string) string {
-	return strings.TrimSpace(subjectID)
-}
-
-func reconcileTenantBindings(auths []*coreauth.Auth) error {
-	if len(auths) == 0 {
-		return nil
-	}
-	tenantID := ""
-	authIDs := make([]string, 0, len(auths))
-	for _, auth := range auths {
-		if auth != nil {
-			tenantID = auth.TenantID
-			if id := strings.TrimSpace(auth.ID); id != "" {
-				authIDs = append(authIDs, id)
-			}
-		}
-	}
-	rows, err := usage.ListAIAccountBindingsForTenantAuths(tenantID, authIDs)
-	if err != nil {
-		return err
-	}
-	byID := make(map[string]usage.AIAccountTenantBinding, len(rows))
-	for _, row := range rows {
-		byID[row.AuthID] = row
-	}
-	// Best-effort per auth: one bad binding row must not 500 the whole status list.
-	var firstErr error
-	for _, auth := range auths {
-		if auth == nil {
-			continue
-		}
-		identity := usage.ResolveAuthSubjectIdentity(auth)
-		if identity == nil {
-			continue
-		}
-		row, ok := byID[auth.ID]
-		if ok && row.BindingState == "active" && row.AuthSubjectID == identity.ID && row.AuthIndex == auth.EnsureIndex() && row.BindingSeedHash == identity.SeedHash {
-			continue
-		}
-		if err := usage.UpsertAIAccountTenantBinding(auth, identity); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	return firstErr
-}
-
-func sanitizeMsg(msg string) string {
-	msg = strings.TrimSpace(msg)
-	lower := strings.ToLower(msg)
-	if strings.Contains(lower, "bearer ") || strings.Contains(lower, "authorization:") {
-		return "upstream request failed"
-	}
-	if len(msg) > 200 {
-		return msg[:200]
-	}
-	return msg
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if s := strings.TrimSpace(v); s != "" {
-			return s
-		}
-	}
-	return ""
-}
-
-func metadataString(auth *coreauth.Auth, keys ...string) string {
-	if auth == nil || auth.Metadata == nil {
-		return ""
-	}
-	for _, key := range keys {
-		if v, ok := auth.Metadata[key]; ok {
-			if s, ok := v.(string); ok {
-				if t := strings.TrimSpace(s); t != "" {
-					return t
-				}
-			}
-		}
-	}
-	return ""
 }

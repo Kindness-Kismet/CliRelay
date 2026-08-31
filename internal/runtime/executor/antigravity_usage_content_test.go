@@ -19,11 +19,15 @@ import (
 func TestAntigravityExecutePublishesUsageContent(t *testing.T) {
 	setUsageBodyCaptureForTest(t, true)
 	const input = `{"request":{"contents":[{"role":"user","parts":[{"text":"ag input marker"}]}]}}`
-	const output = `{"response":{"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":5}}}`
+	// A non-streaming Execute now asks the streaming endpoint and assembles the
+	// reply, because :generateContent is not available for every model. The
+	// stub therefore speaks SSE even though the caller wants one response.
+	const output = `data: {"response":{"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":5}}}` + "\n\n"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != antigravityGeneratePath {
+		if r.URL.Path != antigravityStreamPath {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
+		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte(output))
 	}))
 	defer server.Close()

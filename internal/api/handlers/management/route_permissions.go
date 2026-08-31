@@ -74,6 +74,14 @@ func permissionForManagementRequest(method, path string) string {
 		return "tenant.audit.read"
 	case strings.HasPrefix(relative, "/audit-logs/") && method == http.MethodDelete:
 		return "tenant.audit.delete"
+	// The IP allow/deny list and the attempt history share one permission pair:
+	// reading the attempt log tells you exactly who to ban, so splitting them
+	// would produce a role that can see the attack and not act on it.
+	case strings.HasPrefix(relative, "/ip-access"), strings.HasPrefix(relative, "/auth-attempts"):
+		if write {
+			return "platform.ip_access.write"
+		}
+		return "platform.ip_access.read"
 	case relative == "/menus" && method == http.MethodGet:
 		return "platform.menus.read"
 	case relative == "/menus" && write:
@@ -170,6 +178,14 @@ func permissionForManagementRequest(method, path string) string {
 			return "content_moderation.write"
 		}
 		return "content_moderation.read"
+	case strings.HasPrefix(relative, "/video-generation"):
+		if strings.Contains(relative, "/test") {
+			return "video_generation.test"
+		}
+		if write {
+			return "video_generation.write"
+		}
+		return "video_generation.read"
 	case strings.HasPrefix(relative, "/image-generation"):
 		if strings.Contains(relative, "/test") {
 			return "image_generation.test"

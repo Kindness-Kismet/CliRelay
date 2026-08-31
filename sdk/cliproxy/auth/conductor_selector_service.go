@@ -237,11 +237,14 @@ func (s selectorService) pickLocked(
 		candidates := s.buildCandidatesLocked(scope, selectorRouteGroup, tried, registryRef, includeCandidate)
 		if len(candidates) == 0 {
 			if diagnosis == nil {
-				diagnosis = s.diagnoseEmptyCandidates(scope, selectorRouteGroup, includeCandidate)
+				diagnosis = s.diagnoseEmptyCandidates(scope, selectorRouteGroup, registryRef, includeCandidate)
 			}
 			continue
 		}
 		selector := s.manager.selectorForRoutingScopeLocked(scope.cfg, selectorRouteGroup, scope.allowedGroups)
+		if s.manager.concurrencyLimiter != nil {
+			candidates = s.manager.concurrencyLimiter.FilterAvailableCandidates(candidates)
+		}
 		selected, errPick := selector.Pick(ctx, selectorProvider, scope.model, optionsForSelectionRouteGroup(opts, selectorRouteGroup), candidates)
 		if errPick != nil {
 			return nil, "", errPick

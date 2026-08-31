@@ -36,6 +36,8 @@ type ClineKey = coreconfig.ClineKey
 type ClineModel = coreconfig.ClineModel
 type OllamaCloudKey = coreconfig.OllamaCloudKey
 type OllamaCloudModel = coreconfig.OllamaCloudModel
+type CommandCodeKey = coreconfig.CommandCodeKey
+type CommandCodeModel = coreconfig.CommandCodeModel
 type VertexCompatKey = coreconfig.VertexCompatKey
 type VertexCompatModel = coreconfig.VertexCompatModel
 type OpenAICompatibility = coreconfig.OpenAICompatibility
@@ -49,6 +51,7 @@ const (
 	DefaultBedrockRegion         = coreconfig.DefaultBedrockRegion
 	DefaultClineBaseURL          = coreconfig.DefaultClineBaseURL
 	DefaultOllamaCloudBaseURL    = coreconfig.DefaultOllamaCloudBaseURL
+	DefaultCommandCodeBaseURL    = coreconfig.DefaultCommandCodeBaseURL
 )
 
 func LoadConfig(configFile string) (*Config, error) { return coreconfig.LoadConfig(configFile) }

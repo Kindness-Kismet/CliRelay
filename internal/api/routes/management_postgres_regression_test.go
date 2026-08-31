@@ -329,6 +329,7 @@ func postgresSmokeAllowsStatus(routePath string, status int, body string) bool {
 		"auth manager unavailable",
 		"core auth manager unavailable",
 		"image generation service unavailable",
+		"video generation service unavailable",
 		"identity service unavailable",
 	}
 	for _, text := range allowed {

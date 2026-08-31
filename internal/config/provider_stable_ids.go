@@ -62,6 +62,9 @@ func (cfg *Config) EnsureProviderStableIDs() bool {
 	for i := range cfg.OllamaCloudKey {
 		ensure(&cfg.OllamaCloudKey[i].ID)
 	}
+	for i := range cfg.CommandCodeKey {
+		ensure(&cfg.CommandCodeKey[i].ID)
+	}
 	for i := range cfg.OpenAICompatibility {
 		ensure(&cfg.OpenAICompatibility[i].ID)
 		for j := range cfg.OpenAICompatibility[i].APIKeyEntries {
@@ -87,6 +90,7 @@ func PreserveMissingProviderStableIDs(previous, next *Config) {
 	preserveIDs(previous.OpenCodeGoKey, next.OpenCodeGoKey, func(v *OpenCodeGoKey) *string { return &v.ID })
 	preserveIDs(previous.ClineKey, next.ClineKey, func(v *ClineKey) *string { return &v.ID })
 	preserveIDs(previous.OllamaCloudKey, next.OllamaCloudKey, func(v *OllamaCloudKey) *string { return &v.ID })
+	preserveIDs(previous.CommandCodeKey, next.CommandCodeKey, func(v *CommandCodeKey) *string { return &v.ID })
 	preserveIDs(previous.VertexCompatAPIKey, next.VertexCompatAPIKey, func(v *VertexCompatKey) *string { return &v.ID })
 	preserveIDs(previous.OpenAICompatibility, next.OpenAICompatibility, func(v *OpenAICompatibility) *string { return &v.ID })
 	for i := range next.OpenAICompatibility {

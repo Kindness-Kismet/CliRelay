@@ -26,7 +26,10 @@ func TestUsageRollupSurvivesDetailDelete(t *testing.T) {
 		CloseDB()
 	})
 
-	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	// Relative to now, not a fixed date: the queries below ask for the last 30
+	// days, so a hard-coded timestamp turns this into a test that passes until
+	// the calendar walks past it and then fails forever.
+	now := time.Now().UTC().Add(-12 * time.Hour)
 	tx, err := getDB().Begin()
 	if err != nil {
 		t.Fatalf("begin: %v", err)

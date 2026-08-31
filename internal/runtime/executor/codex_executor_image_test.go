@@ -702,7 +702,7 @@ func TestUsageReporterTrackFailureStoresErrorContent(t *testing.T) {
 		Provider: "codex",
 		Status:   cliproxyauth.StatusActive,
 	}
-	reporter := newUsageReporter(context.Background(), "codex", model, "", auth)
+	reporter := newUsageReporter(context.Background(), "codex", model, "", auth, false)
 	reporter.setInputContent(`{"model":"` + model + `","prompt":"draw a fox"}`)
 	errValue := fmt.Errorf("openai image conversation returned no downloadable images")
 
@@ -752,7 +752,7 @@ func TestUsageReporterTrackFailureStoresOfficialUpstreamBody(t *testing.T) {
 		Provider: "codex",
 		Status:   cliproxyauth.StatusActive,
 	}
-	reporter := newUsageReporter(context.Background(), "codex", "gpt-image-2", "", auth)
+	reporter := newUsageReporter(context.Background(), "codex", "gpt-image-2", "", auth, false)
 	reporter.setInputContent(`{"model":"gpt-image-2","prompt":"draw a fox"}`)
 	errValue := error(statusErr{
 		code:         http.StatusTooManyRequests,

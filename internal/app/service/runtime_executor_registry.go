@@ -126,7 +126,7 @@ func syncConfigDerivedAuthModels(cfg *config.Config, auth *coreauth.Auth) {
 		return
 	}
 	switch strings.ToLower(strings.TrimSpace(auth.Provider)) {
-	case "opencode-go", "cline", "ollama-cloud":
+	case "opencode-go", "cline", "ollama-cloud", "commandcode":
 		syncDynamicConfigAuthModels(reg, cfg, auth)
 	}
 }
@@ -162,6 +162,17 @@ func syncDynamicConfigAuthModels(reg sdkmodelcatalog.Registry, cfg *config.Confi
 	case "ollama-cloud":
 		ownedBy = "ollama"
 		entry := resolveConfigOllamaCloudKey(cfg, auth)
+		if entry == nil {
+			reg.UnregisterClient(auth.ID)
+			return
+		}
+		if len(entry.Models) > 0 {
+			models = buildNamedConfigModels(filterNamedConfigModels(entry.Models, isNotClinePassConfigModelID), staticModels, ownedBy, provider)
+		}
+		excluded = providerModelAccessExcludedModels(entry.ExcludedModels)
+	case "commandcode":
+		ownedBy = "command-code"
+		entry := resolveConfigCommandCodeKey(cfg, auth)
 		if entry == nil {
 			reg.UnregisterClient(auth.ID)
 			return
@@ -239,6 +250,27 @@ func resolveConfigOllamaCloudKey(cfg *config.Config, auth *coreauth.Auth) *confi
 		cfgBase := strings.TrimSpace(entry.BaseURL)
 		if cfgBase == "" {
 			cfgBase = config.DefaultOllamaCloudBaseURL
+		}
+		if attrKey != "" && strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) {
+			if attrBase == "" || strings.EqualFold(cfgBase, attrBase) {
+				return entry
+			}
+		}
+	}
+	return nil
+}
+
+func resolveConfigCommandCodeKey(cfg *config.Config, auth *coreauth.Auth) *config.CommandCodeKey {
+	if cfg == nil || auth == nil || auth.Attributes == nil {
+		return nil
+	}
+	attrKey := strings.TrimSpace(auth.Attributes["api_key"])
+	attrBase := strings.TrimSpace(auth.Attributes["base_url"])
+	for i := range cfg.CommandCodeKey {
+		entry := &cfg.CommandCodeKey[i]
+		cfgBase := strings.TrimSpace(entry.BaseURL)
+		if cfgBase == "" {
+			cfgBase = config.DefaultCommandCodeBaseURL
 		}
 		if attrKey != "" && strings.EqualFold(strings.TrimSpace(entry.APIKey), attrKey) {
 			if attrBase == "" || strings.EqualFold(cfgBase, attrBase) {
@@ -447,6 +479,10 @@ func FetchClaudeModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Con
 
 func FetchCodexModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
 	return executor.FetchCodexModels(ctx, auth, cfg)
+}
+
+func FetchKimiModels(ctx context.Context, auth *coreauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+	return executor.FetchKimiModels(ctx, auth, cfg)
 }
 
 func RebindTenantExecutors(base *config.Config, coreManager *coreauth.Manager, tenantID string, gateway WebsocketGateway) {

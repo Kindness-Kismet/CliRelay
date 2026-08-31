@@ -52,6 +52,22 @@ func SetGlobalModelRegistryHook(hook ModelRegistryHook) {
 	reg.SetHook(hook)
 }
 
+// oauthCatalogScope returns the catalog rows and mapped model owners that make a
+// tenant's model-library entries routable for this credential. Both are scoped to
+// the credential's own tenant: registration must not leak (or depend on) another
+// tenant's library.
+func oauthCatalogScope(a *coreauth.Auth) ([]oauthProviderModelConfigRow, []string) {
+	if a == nil {
+		return nil, nil
+	}
+	rows := listOAuthProviderModelConfigRowsForTenant(a.TenantID)
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	groups := append([]string{a.Provider, a.ChannelName()}, a.ChannelIdentifiers()...)
+	return rows, serviceapp.ListModelOwnersForAuthGroupsForTenant(a.TenantID, groups)
+}
+
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
 func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	if a == nil || a.ID == "" {
@@ -85,9 +101,9 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 	}
 	provider := strings.ToLower(strings.TrimSpace(a.Provider))
 	compatProviderKey, compatDisplayName, compatDetected := openAICompatInfoFromAuth(a)
-	// Cline and Ollama Cloud use OpenAI-compatible transport metadata to pick
-	// executors, but their model lists are owned by their native config blocks.
-	if compatDetected && provider != "cline" && provider != "ollama-cloud" {
+	// Cline, Ollama Cloud and Command Code use OpenAI-compatible transport metadata
+	// to pick executors, but their model lists are owned by their native config blocks.
+	if compatDetected && provider != "cline" && provider != "ollama-cloud" && provider != "commandcode" {
 		provider = "openai-compatibility"
 	}
 	excluded := s.oauthExcludedModels(provider, authKind)
@@ -142,7 +158,8 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 				excluded = entry.ExcludedModels
 			}
 		}
-		models = appendOAuthProviderModelConfigs(models, provider, authKind, listOAuthProviderModelConfigRows())
+		catalogRows, mappedOwners := oauthCatalogScope(a)
+		models = appendOAuthProviderModelConfigs(models, provider, authKind, catalogRows, mappedOwners)
 		models = applyExcludedModels(models, excluded)
 	case "bedrock":
 		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("bedrock")
@@ -173,6 +190,15 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 			excluded = providerModelAccessExcludedModels(entry.ExcludedModels)
 		}
 		models = applyExcludedModels(models, excluded)
+	case "commandcode":
+		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("commandcode")
+		if entry := s.resolveConfigCommandCodeKey(a); entry != nil && authKind == "apikey" {
+			if len(entry.Models) > 0 {
+				models = buildCommandCodeConfigModels(entry)
+			}
+			excluded = providerModelAccessExcludedModels(entry.ExcludedModels)
+		}
+		models = applyExcludedModels(models, excluded)
 	case "ollama-cloud":
 		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("ollama-cloud")
 		if entry := s.resolveConfigOllamaCloudKey(a); entry != nil && authKind == "apikey" {
@@ -195,18 +221,31 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 				excluded = entry.ExcludedModels
 			}
 		}
-		models = appendOAuthProviderModelConfigs(models, provider, authKind, listOAuthProviderModelConfigRows())
+		catalogRows, mappedOwners := oauthCatalogScope(a)
+		models = appendOAuthProviderModelConfigs(models, provider, authKind, catalogRows, mappedOwners)
 		models = applyExcludedModels(models, excluded)
 	case "qwen":
 		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("qwen")
 		models = applyExcludedModels(models, excluded)
 	case "xai":
+		// Live xAI discovery returns only the models the account is entitled to
+		// today, so a newly released model id is unroutable until we ship a
+		// catalog update. Honour the tenant's model library the same way
+		// claude/codex do, letting operators add an id and use it immediately.
 		models = s.fetchXAIRegistryModels(ctx, a, excluded)
+		catalogRows, mappedOwners := oauthCatalogScope(a)
+		models = appendOAuthProviderModelConfigs(models, provider, authKind, catalogRows, mappedOwners)
+		models = applyExcludedModels(models, excluded)
 	case "iflow":
 		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("iflow")
 		models = applyExcludedModels(models, excluded)
 	case "kimi":
-		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("kimi")
+		// Live discovery so a model Moonshot ships today is routable today; the
+		// tenant model library still supplements it, because the coding gateway
+		// lists what this account is entitled to rather than the full catalog.
+		models = s.fetchKimiRegistryModels(ctx, a, excluded)
+		catalogRows, mappedOwners := oauthCatalogScope(a)
+		models = appendOAuthProviderModelConfigs(models, provider, authKind, catalogRows, mappedOwners)
 		models = applyExcludedModels(models, excluded)
 	default:
 		if s.registerOpenAICompatModels(a, provider, compatProviderKey, compatDisplayName, compatDetected) {

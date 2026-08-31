@@ -40,8 +40,20 @@ type usageReporter struct {
 	once                sync.Once
 	contentMu           sync.Mutex
 	captureFullContent  bool
-	streamingRequest    bool
-	compactOutputFull   atomic.Bool
+	// streamingRequest records what the client asked for, so it is fixed at
+	// construction from the client payload and never revised afterwards.
+	//
+	// It used to be derived inside setInputContent, which every provider calls
+	// only after the upstream has answered 2xx and the response body is about to
+	// be read. Requests that failed before that point — an upstream 429, 5xx, a
+	// dial error — published their usage record with the zero value, so every
+	// early failure was filed as non-streaming regardless of what the client
+	// sent. In production that turned the "non-streaming" bucket into
+	// "non-streaming successes plus all failures" and left the streaming bucket
+	// looking flawless, which read as a non-streaming outage that no endpoint
+	// change could fix.
+	streamingRequest  bool
+	compactOutputFull atomic.Bool
 
 	// Content captured for log detail viewer
 	inputContent  string
@@ -52,8 +64,15 @@ type usageReporter struct {
 	outputPath    string
 }
 
-func newUsageReporter(ctx context.Context, provider, model, upstreamModel string, auth *cliproxyauth.Auth) *usageReporter {
+// newUsageReporter builds the reporter for one request. clientStreaming must
+// describe the client's own request mode: it is taken here rather than inferred
+// later so that a request failing before any upstream byte arrives is still
+// filed under the mode the caller actually used.
+func newUsageReporter(ctx context.Context, provider, model, upstreamModel string, auth *cliproxyauth.Auth, clientStreaming bool) *usageReporter {
 	apiKey := apiKeyFromContext(ctx)
+	if sameModelIdentity(model, upstreamModel) {
+		upstreamModel = ""
+	}
 	reporter := &usageReporter{
 		provider:           provider,
 		model:              model,
@@ -63,6 +82,7 @@ func newUsageReporter(ctx context.Context, provider, model, upstreamModel string
 		trustedTenantID:    strings.TrimSpace(contextStringValue(ctx, util.ContextKeyTrustedTenantID)),
 		source:             resolveUsageSource(auth, apiKey),
 		captureFullContent: internalusage.RequestLogBodyStorageEnabled(),
+		streamingRequest:   clientStreaming,
 	}
 	if identity := internalusage.ResolveAPIKeyIdentity(apiKey); identity != nil {
 		reporter.apiKeyID = identity.ID
@@ -91,7 +111,6 @@ func (r *usageReporter) publishWithContentBytes(ctx context.Context, detail core
 	if r == nil {
 		return
 	}
-	r.streamingRequest = isStreamingUsageRequestBytes(inputContent)
 	if r.captureFullContent {
 		r.contentMu.Lock()
 		r.setInputContentLocked(string(inputContent))
@@ -112,6 +131,14 @@ func (r *usageReporter) setModel(model string) {
 	}
 	if model = strings.TrimSpace(model); model != "" {
 		r.model = model
+		// Keep the invariant that upstream/fallback names recorded on the usage
+		// record are genuinely different models than the logged one.
+		if sameModelIdentity(r.model, r.upstreamModel) {
+			r.upstreamModel = ""
+		}
+		if sameModelIdentity(r.model, r.visionFallbackModel) {
+			r.visionFallbackModel = ""
+		}
 	}
 }
 
@@ -122,11 +149,14 @@ func (r *usageReporter) setThinkingLevel(level string) {
 	r.thinkingLevel = strings.TrimSpace(level)
 }
 
+// setUpstreamModel records the model actually sent upstream. Names that only
+// differ from the requested model by a routing prefix are dropped: see
+// sameModelIdentity for why an alias is not a different model.
 func (r *usageReporter) setUpstreamModel(model string) {
 	if r == nil {
 		return
 	}
-	if model = strings.TrimSpace(model); model != "" {
+	if model = strings.TrimSpace(model); model != "" && !sameModelIdentity(r.model, model) {
 		r.upstreamModel = model
 	}
 }
@@ -135,7 +165,7 @@ func (r *usageReporter) setVisionFallbackModel(model string) {
 	if r == nil {
 		return
 	}
-	if model = strings.TrimSpace(model); model != "" {
+	if model = strings.TrimSpace(model); model != "" && !sameModelIdentity(r.model, model) {
 		r.visionFallbackModel = model
 	}
 }
@@ -146,13 +176,14 @@ func (r *usageReporter) setInputContent(content string) {
 	r.setInputContentBytes([]byte(content))
 }
 
-// setInputContentBytes is the hot-path form: never force a string(payload) copy when
-// store-content is off and we only need the stream flag.
+// setInputContentBytes is the hot-path form: never force a string(payload) copy
+// when store-content is off and there is nothing to retain. It deliberately does
+// not touch streamingRequest — see that field for why the mode is settled at
+// construction instead.
 func (r *usageReporter) setInputContentBytes(content []byte) {
 	if r == nil {
 		return
 	}
-	r.streamingRequest = isStreamingUsageRequestBytes(content)
 	if !r.captureFullContent {
 		return
 	}
@@ -243,7 +274,6 @@ func (r *usageReporter) publishFailureWithContentBytes(ctx context.Context, inpu
 	if shouldSuppressUsageFailure(nil, outputContent) {
 		return
 	}
-	r.streamingRequest = isStreamingUsageRequestBytes(inputContent)
 	r.contentMu.Lock()
 	if r.captureFullContent {
 		r.setInputContentLocked(string(inputContent))
@@ -327,6 +357,7 @@ func (r *usageReporter) publishWithOutcome(ctx context.Context, detail coreusage
 	if r == nil {
 		return
 	}
+	detail = applyOllamaPromptCacheEstimate(ctx, detail)
 	if detail.TotalTokens == 0 {
 		total := detail.InputTokens + detail.OutputTokens + detail.ReasoningTokens
 		if total > 0 {

@@ -10,23 +10,23 @@
     "baseline_above_800": [
       {
         "path": "internal/api/handlers/management/end_user.go",
-        "max_lines": 912
+        "max_lines": 910
       },
       {
         "path": "internal/enduser/service.go",
-        "max_lines": 1189
+        "max_lines": 1168
       },
       {
         "path": "internal/identity/service.go",
-        "max_lines": 1144
+        "max_lines": 932
       },
       {
         "path": "internal/management/aiaccountstatus/service.go",
-        "max_lines": 1066
+        "max_lines": 910
       },
       {
         "path": "internal/management/modelcatalog/availability.go",
-        "max_lines": 1188
+        "max_lines": 993
       },
       {
         "path": "internal/management/settings/providers/provider_keys_extended.go",
@@ -37,12 +37,8 @@
         "max_lines": 1198
       },
       {
-        "path": "internal/runtime/executor/codex_image_generation_bridge.go",
-        "max_lines": 1196
-      },
-      {
         "path": "internal/storage/postgres/migrations.go",
-        "max_lines": 1120
+        "max_lines": 868
       },
       {
         "path": "internal/storage/sqlite/apikey/store.go",
@@ -50,11 +46,11 @@
       },
       {
         "path": "internal/storage/sqlite/modelconfig/store.go",
-        "max_lines": 946
+        "max_lines": 934
       },
       {
         "path": "internal/usage/ai_account_subject_store.go",
-        "max_lines": 1075
+        "max_lines": 905
       },
       {
         "path": "internal/usage/openrouter_model_sync.go",
@@ -66,7 +62,7 @@
       },
       {
         "path": "internal/usage/usage_db.go",
-        "max_lines": 1164
+        "max_lines": 1150
       },
       {
         "path": "sdk/api/handlers/handlers.go",

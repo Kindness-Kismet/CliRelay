@@ -13,9 +13,11 @@ import (
 )
 
 const (
-	// Keep defaults aligned with upstream CLIProxyAPI (codex-tui).
-	codexUserAgent  = "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)"
-	codexOriginator = "codex-tui"
+	// Fallback identity for requests that bypass the fingerprint resolver. Kept in
+	// sync with config.DefaultCodexFingerprint* so both paths present the same
+	// official Codex CLI identity; see that block for why `codex-tui` was dropped.
+	codexUserAgent  = config.DefaultCodexFingerprintUserAgent
+	codexOriginator = config.DefaultCodexFingerprintOriginator
 )
 
 func applyCodexHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.Auth, token string, stream bool) {
@@ -44,6 +46,17 @@ func applyCodexHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.A
 	} else {
 		misc.EnsureHeader(r.Header, ginHeaders, "User-Agent", codexUserAgent)
 	}
+
+	// Device fingerprint convergence runs after the client headers above have
+	// been copied in, so it rewrites the values that actually reach upstream.
+	// The executor resolves the id set before translating the body and stores it
+	// on the context; requests that never pass through that path (token probes,
+	// PrepareRequest) resolve their own set here.
+	convergedIDs := codexConvergedIDsFromContext(r.Context())
+	if convergedIDs == nil {
+		convergedIDs = resolveCodexConvergedIDs(cfg, auth, ginHeaders)
+	}
+	applyCodexConvergenceHeaders(r.Header, convergedIDs, ginHeaders)
 
 	// Upstream codex-tui behavior: only attach Session_id when the UA indicates a desktop client.
 	if strings.Contains(r.Header.Get("User-Agent"), "Mac OS") && strings.TrimSpace(r.Header.Get("Session_id")) == "" {

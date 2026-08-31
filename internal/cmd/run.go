@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -40,7 +41,7 @@ func StartService(cfg *config.Config, configPath string, localPassword string) {
 		return
 	}
 	usage.InitRedis(cfg.Redis)
-	defer usage.StopRedis()
+	defer stopRuntimeDataStack()
 
 	moderator := contentmoderation.NewRequestModerator(contentmoderation.NewStore(usage.RuntimeDB()), contentmoderation.NewEvaluator(nil))
 	contentmoderation.SetRuntime(moderator)
@@ -105,20 +106,74 @@ func StartServiceBackground(cfg *config.Config, configPath string, localPassword
 	service, err := builder.Build()
 	if err != nil {
 		log.Errorf("failed to build proxy service: %v", err)
-		usage.StopRedis()
+		stopRuntimeDataStack()
 		close(doneCh)
 		return cancelFn, doneCh
 	}
 
 	go func() {
 		defer close(doneCh)
-		defer usage.StopRedis()
+		defer stopRuntimeDataStack()
 		if err := service.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			log.Errorf("proxy service exited with error: %v", err)
 		}
 	}()
 
 	return cancelFn, doneCh
+}
+
+// sessionReaperStop holds the identity session reaper's cancel function. The
+// reaper is started with the runtime data stack, so it has to be torn down with
+// it; a process that re-initialises the stack (tests, cloud-deploy reconfigure)
+// would otherwise leak one goroutine and one ticker per initialisation.
+var (
+	sessionReaperMu   sync.Mutex
+	sessionReaperStop func()
+)
+
+func startSessionReaper(service *identity.Service, interval time.Duration) {
+	sessionReaperMu.Lock()
+	defer sessionReaperMu.Unlock()
+	if sessionReaperStop != nil {
+		sessionReaperStop()
+	}
+	sessionReaperStop = service.StartSessionReaper(context.Background(), interval)
+}
+
+// auditRetentionStop mirrors the session reaper's lifecycle: started with the
+// runtime data stack, so it has to be stopped with it or a re-initialisation
+// leaks a goroutine and a ticker.
+var (
+	auditRetentionMu   sync.Mutex
+	auditRetentionStop func()
+)
+
+func startAuditRetention(service *identity.Service, policy identity.AuditRetentionPolicy) {
+	auditRetentionMu.Lock()
+	defer auditRetentionMu.Unlock()
+	if auditRetentionStop != nil {
+		auditRetentionStop()
+	}
+	auditRetentionStop = service.StartAuditRetention(context.Background(), policy)
+}
+
+// stopRuntimeDataStack tears down everything initializeRuntimeDataStack started.
+func stopRuntimeDataStack() {
+	sessionReaperMu.Lock()
+	stop := sessionReaperStop
+	sessionReaperStop = nil
+	sessionReaperMu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	auditRetentionMu.Lock()
+	stopAudit := auditRetentionStop
+	auditRetentionStop = nil
+	auditRetentionMu.Unlock()
+	if stopAudit != nil {
+		stopAudit()
+	}
+	usage.StopRedis()
 }
 
 type bootstrapAdminPassword struct {
@@ -165,6 +220,9 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 		return err
 	}
 	identity.SetDefault(identityService)
+	identityService.SetSessionPolicy(identity.SessionPolicyFromConfig(cfg))
+	startSessionReaper(identityService, identity.SessionReaperIntervalFromConfig(cfg))
+	startAuditRetention(identityService, identity.AuditRetentionPolicyFromConfig(cfg))
 	// Import YAML keys first so one-shot end-user backfill can see them.
 	if _, err := usage.MigrateAPIKeysFromConfig(cfg, configPath); err != nil {
 		return fmt.Errorf("migrate api keys from config: %w", err)
@@ -182,6 +240,8 @@ func initializeRuntimeDataStack(cfg *config.Config, configPath string, loc *time
 	usage.ApplyStoredProxyPool(cfg)
 	settingsstore.MigrateRuntimeSettingsFromConfig(cfg, configPath)
 	settingsstore.ApplyStoredRuntimeSettings(cfg)
+	// After the settings store is live: the protection policy is read from it.
+	initializeIPAccessControl(context.Background(), cfg)
 	middleware.InitQuotaUsageFuncs(usage.CountTodayByKey, usage.CountTotalByKey, usage.QueryTotalCostByKey, usage.QueryTodayCostByKey)
 	middleware.InitQuotaEndUserUsageFuncs(usage.CountTodayByEndUser, usage.CountTotalByEndUser, usage.QueryTotalCostByEndUser, usage.QueryTodayCostByEndUser)
 	middleware.InitQuotaPeriodUsageFuncs(usage.QueryPeriodSpendingByAPIKeyIDForTenant, usage.QueryPeriodSpendingByEndUserForTenant)
@@ -206,7 +266,24 @@ func defaultRuntimeDataStackMaintenanceOps() runtimeDataStackMaintenanceOps {
 			if _, err := usage.RunAIAccountSharedSubjectBackfillAtInit(); err != nil {
 				return err
 			}
-			return usage.RunAIAccountSubjectUsageTokensBackfillAtInit()
+			if err := usage.RunAIAccountSubjectUsageTokensBackfillAtInit(); err != nil {
+				return err
+			}
+			if err := usage.RunAIAccountSubjectCycleBucketMergeAtInit(); err != nil {
+				return err
+			}
+			if err := usage.RunAIAccountSubjectCycleRealignAtInit(); err != nil {
+				return err
+			}
+			// After realign: that pass folds fragments onto the stored anchor, and
+			// this one may then move that anchor to the period it should have
+			// rolled into.
+			if err := usage.RunAIAccountSubjectCycleRolloverRepairAtInit(); err != nil {
+				return err
+			}
+			// Last: it repairs the anchors the metered-probe pass above cannot see,
+			// those held on a period the upstream refilled rather than spent out.
+			return usage.RunAIAccountSubjectCycleRefillRepairAtInit()
 		},
 		scheduleUsageRollupCatchup: usage.ScheduleUsageRollupBlueGreenCatchup,
 	}

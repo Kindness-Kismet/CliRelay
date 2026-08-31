@@ -40,6 +40,8 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeClineKeys(ctx)...)
 	// Ollama Cloud API Keys
 	out = append(out, s.synthesizeOllamaCloudKeys(ctx)...)
+	// Command Code API Keys
+	out = append(out, s.synthesizeCommandCodeKeys(ctx)...)
 	// OpenAI-compat
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
@@ -415,6 +417,73 @@ func (s *ConfigSynthesizer) synthesizeClineKeys(ctx *SynthesisContext) []*coreau
 		a := &coreauth.Auth{
 			ID:         id,
 			Provider:   "cline",
+			Label:      label,
+			Prefix:     prefix,
+			Status:     coreauth.StatusActive,
+			ProxyURL:   proxyURL,
+			ProxyID:    proxyID,
+			Attributes: attrs,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
+		ApplyConfigDisabledState(a, entry.Disabled)
+		out = append(out, a)
+	}
+	return out
+}
+
+// synthesizeCommandCodeKeys creates Auth entries for Command Code API keys.
+//
+// Command Code speaks plain OpenAI on its Provider API, so the auth carries
+// compat metadata and is served by the shared OpenAI-compatible executor rather
+// than a dedicated one.
+func (s *ConfigSynthesizer) synthesizeCommandCodeKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	cfg := ctx.Config
+	now := ctx.Now
+	idGen := ctx.IDGenerator
+
+	out := make([]*coreauth.Auth, 0, len(cfg.CommandCodeKey))
+	for i := range cfg.CommandCodeKey {
+		entry := cfg.CommandCodeKey[i]
+		key := strings.TrimSpace(entry.APIKey)
+		if key == "" {
+			continue
+		}
+		prefix := strings.TrimSpace(entry.Prefix)
+		base := strings.TrimSpace(entry.BaseURL)
+		if base == "" {
+			base = config.DefaultCommandCodeBaseURL
+		}
+		base = strings.TrimSuffix(base, "/")
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		proxyID := strings.TrimSpace(entry.ProxyID)
+		id, token := idGen.Next("commandcode:apikey", key, base, proxyURL)
+		attrs := map[string]string{
+			"source":       fmt.Sprintf("config:commandcode[%s]", token),
+			"api_key":      key,
+			"base_url":     base,
+			"compat_name":  "Command Code",
+			"provider_key": "commandcode",
+		}
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
+		if hash := diff.ComputeCommandCodeModelsHash(entry.Models); hash != "" {
+			attrs["models_hash"] = hash
+		}
+		if visionFallbackModel := strings.TrimSpace(entry.VisionFallbackModel); visionFallbackModel != "" {
+			attrs["vision_fallback_model"] = visionFallbackModel
+		}
+		addConfigHeadersToAttrs(entry.Headers, attrs)
+		label := strings.TrimSpace(entry.Name)
+		if label == "" {
+			label = "commandcode-apikey"
+		}
+		addProviderBindingAttrs(attrs, "", entry.ID)
+		a := &coreauth.Auth{
+			ID:         id,
+			Provider:   "commandcode",
 			Label:      label,
 			Prefix:     prefix,
 			Status:     coreauth.StatusActive,

@@ -107,7 +107,9 @@ func providerSupportsClaudeCacheControl(provider string) bool {
 
 func providerSupportsSessionPromptCacheKey(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case openCodeGoProvider, "cline", "ollama-cloud":
+	// Command Code prices cache reads separately from fresh input, so a stable
+	// per-session key is what lets a long conversation stay on the cheap side.
+	case openCodeGoProvider, "cline", "ollama-cloud", commandCodeProvider:
 		return true
 	default:
 		return false

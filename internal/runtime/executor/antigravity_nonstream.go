@@ -17,8 +17,13 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-// executeClaudeNonStream performs a claude non-streaming request to the Antigravity API.
-func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
+// executeViaStreamEndpoint serves a non-streaming request by calling the
+// upstream's streaming endpoint and assembling the chunks into one response.
+//
+// Named for what it does rather than for claude, which is all it used to serve:
+// the endpoint choice is about which upstream path actually works, not about
+// which model family asked.
+func (e *AntigravityExecutor) executeViaStreamEndpoint(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -107,10 +112,9 @@ attemptLoop:
 				lastStatus = httpResp.StatusCode
 				lastBody = append([]byte(nil), bodyBytes...)
 				lastErr = nil
-				if httpResp.StatusCode == http.StatusTooManyRequests && idx+1 < len(baseURLs) {
-					log.Debugf("antigravity executor: rate limited on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
-					continue
-				}
+				// 429 is an account-level RESOURCE_EXHAUSTED signal, not a
+				// host-specific hiccup: see antigravity_executor.go for the
+				// production trace that motivated dropping this fallback.
 				if antigravityShouldRetryNoCapacity(httpResp.StatusCode, bodyBytes) {
 					if idx+1 < len(baseURLs) {
 						log.Debugf("antigravity executor: no capacity on base url %s, retrying with fallback base url: %s", baseURL, baseURLs[idx+1])
